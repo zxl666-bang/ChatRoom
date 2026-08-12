@@ -1,4 +1,0 @@
-/home/zxl666/ChatRoom/build/CMakeFiles/chat_server.dir
-/home/zxl666/ChatRoom/build/CMakeFiles/chat_client.dir
-/home/zxl666/ChatRoom/build/CMakeFiles/edit_cache.dir
-/home/zxl666/ChatRoom/build/CMakeFiles/rebuild_cache.dir
