@@ -1,0 +1,2 @@
+/reg name password
+/add_firend name

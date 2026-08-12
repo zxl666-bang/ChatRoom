@@ -1,0 +1,26 @@
+[
+{
+  "directory": "/home/zxl666/ChatRoom/build",
+  "command": "/usr/bin/c++  -I/usr/include/mysql -I/home/zxl666/ChatRoom/src -std=gnu++17 -Wall -Wextra -o CMakeFiles/chat_server.dir/src/server.cpp.o -c /home/zxl666/ChatRoom/src/server.cpp",
+  "file": "/home/zxl666/ChatRoom/src/server.cpp",
+  "output": "CMakeFiles/chat_server.dir/src/server.cpp.o"
+},
+{
+  "directory": "/home/zxl666/ChatRoom/build",
+  "command": "/usr/bin/c++  -I/usr/include/mysql -I/home/zxl666/ChatRoom/src -std=gnu++17 -Wall -Wextra -o CMakeFiles/chat_server.dir/src/file_transfer.cpp.o -c /home/zxl666/ChatRoom/src/file_transfer.cpp",
+  "file": "/home/zxl666/ChatRoom/src/file_transfer.cpp",
+  "output": "CMakeFiles/chat_server.dir/src/file_transfer.cpp.o"
+},
+{
+  "directory": "/home/zxl666/ChatRoom/build",
+  "command": "/usr/bin/c++  -I/usr/include/mysql -I/home/zxl666/ChatRoom/src -std=gnu++17 -Wall -Wextra -o CMakeFiles/chat_server.dir/src/send_email.cpp.o -c /home/zxl666/ChatRoom/src/send_email.cpp",
+  "file": "/home/zxl666/ChatRoom/src/send_email.cpp",
+  "output": "CMakeFiles/chat_server.dir/src/send_email.cpp.o"
+},
+{
+  "directory": "/home/zxl666/ChatRoom/build",
+  "command": "/usr/bin/c++  -I/usr/include/mysql -I/home/zxl666/ChatRoom/src -std=gnu++17 -Wall -Wextra -o CMakeFiles/chat_client.dir/src/client.cpp.o -c /home/zxl666/ChatRoom/src/client.cpp",
+  "file": "/home/zxl666/ChatRoom/src/client.cpp",
+  "output": "CMakeFiles/chat_client.dir/src/client.cpp.o"
+}
+]

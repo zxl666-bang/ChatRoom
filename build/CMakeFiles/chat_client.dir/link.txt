@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/chat_client.dir/src/client.cpp.o -o chat_client  /usr/lib/x86_64-linux-gnu/libssl.so /usr/lib/x86_64-linux-gnu/libcrypto.so /usr/lib/x86_64-linux-gnu/libcurl.so -lpthread 
