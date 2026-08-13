@@ -41,6 +41,8 @@ extern SSL*ssl;
 extern int epoll_fd;
 ssize_t  tls_write(int fd,const void*data,size_t size);
 ssize_t tls_read(int fd,void*data,size_t size);
+void lixian(int fd);
+void Read(int fd);
 void close_connection(int fd);
 void flush_send_buffer(int fd);
 void send_message(int fd, const std::string& msg);

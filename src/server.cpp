@@ -804,42 +804,32 @@ if (reply) {
     freeReplyObject(reply);
 }
 
-bool regiser_user1(int ufd, const string& username, const string& pwd_hash, const string& email, const string& code) {
+bool regiser_user1(int fd, const string& name, const string& password, const string& email) {
    
-    cout << "regiser_user: email = " << email << ", code = " << code << endl;
-    if (user_exists1(username)) {
-        send_message(ufd, "用户名已存在\n");
+    string sql1="SELECT id FROM users WHERE email=?";
+    auto it1=excute_select(sql1,{email});
+    if(!it1.empty())
+    {
+        send_message(fd,"邮箱已经被注册过\n");
         return false;
     }
-
-    string email_key = "email:" + email;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", email_key.c_str());
-    if (reply && reply->type == REDIS_REPLY_INTEGER && reply->integer == 1) {
-        send_message(ufd, "邮箱已被注册\n");
-        freeReplyObject(reply);
+    string sql="INSERT INTO users (username,password_hash,email) VALUES (?,?,?)";
+    if(user_exists1(name))
+    {
+        send_message(fd,"该用户已存在\n");
         return false;
     }
-    if (reply) freeReplyObject(reply);
-
-    if (!verify_captcha(ufd, email, code)) {
-     
+    auto it=excute_updata(sql,{name,password,email});
+    if(it==1)
+    {
+       
+        return true;
+    }
+    else
+    {
+        send_message(fd,"注册失败\n");
         return false;
     }
-
-    string user_key = "user:" + username;
-    redisReply* reply2 = (redisReply*)redisCommand(redis_conn, "HSET %s password %s email %s",
-                                                    user_key.c_str(), pwd_hash.c_str(), email.c_str());
-    if (!reply2 || reply2->type != REDIS_REPLY_INTEGER || reply2->integer != 2) {
-        send_message(ufd, "注册失败，请重试\n");
-        if (reply2) freeReplyObject(reply2);
-        return false;
-    }
-    freeReplyObject(reply2);
-
-    redisCommand(redis_conn, "SET %s %s", email_key.c_str(), username.c_str());
-
-    send_message(ufd, "注册成功\n");
-    return true;
 }
 
 bool registeruser(int fd,const string&name,const string&password,const string&email,const string&code)
@@ -864,7 +854,7 @@ bool registeruser(int fd,const string&name,const string&password,const string&em
     auto it=excute_updata(sql,{name,password,email});
     if(it==1)
     {
-        send_message(fd,"注册成功，请登录\n");
+      
         return true;
     }
     else
@@ -2711,16 +2701,33 @@ void handle_command(int fd, const string& line)
         iss>>email;
         GET_CAPTCHA(fd,email);
     }
-    else if(cmd =="注册")
+    else if(cmd=="普通注册")
+    {
+        string name,password,email;
+        if(!(iss>>name>>password>>email))
+        {
+            send_message(fd,"用法：普通登录 <用户名> <密码> <邮箱>");
+            return;
+        }
+        if(regiser_user1(fd,name,password,email))
+        {
+            send_message(fd,"注册成功，请登录\n");
+        }
+        else
+        {
+            send_message(fd,"注册失败\n");
+        }
+    }
+    else if(cmd =="验证码注册")
     {
         string name,pwd,email,code;
           if (!(iss >> name >> pwd >> email >> code)) {
-        send_message(fd, "用法: 注册 <用户名> <密码> <邮箱> <验证码>\n");
+        send_message(fd, "用法: 验证码注册 <用户名> <密码> <邮箱> <验证码>\n");
         return;
     }
         if(registeruser(fd,name,pwd,email,code))
         {
-            send_message(fd,"注册成功\n");
+            send_message(fd,"注册成功,请登录\n");
         }
         else
         {

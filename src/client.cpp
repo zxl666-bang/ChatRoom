@@ -610,33 +610,33 @@ void recv_thread_func() {
                     }
 
                     std::cout << "登录成功\n";
-                    cerr<< "/5 name;//添加好友\n"<<
+                    cerr<< "/5;//添加好友\n"<<
     "/6;//列出好友列表\n"<<
-    "/7 name;//同意好友申请\n"<<
-    "/8 name;//拒绝好友申请\n"<<
+    "/7;//同意好友申请\n"<<
+    "/8;//拒绝好友申请\n"<<
     "/9;//列出好友\n"<<
-    "/10 name msg;//私聊\n"<<
-    "/11 name;//屏蔽好友\n"<<
-    "/12 name;//解除屏蔽\n"<<
-    "/13 groupname;//申请加入群聊;\n"<<
-    "/14 groupname;//推出群聊;\n"<<
-    "/15 groupname msg;//群聊；\n"<<
-    "/16 groupname;//建群;\n"<<
-    "/17 groupname;//查看群聊成员;\n"<<
+    "/10;//私聊\n"<<
+    "/11;//屏蔽好友\n"<<
+    "/12;//解除屏蔽\n"<<
+    "/13;//申请加入群聊;\n"<<
+    "/14;//推出群聊;\n"<<
+    "/15;//群聊；\n"<<
+    "/16;//建群;\n"<<
+    "/17;//查看群聊成员;\n"<<
     "/18;//查看自己的群聊;\n"<<
-    "/19 groupname;//查看群聊申请（群主和管理员）\n"<<
-    "/20 groupname name;//同意加群申请（群主和管理员）\n"<<
-    "/21 groupname name;//拒绝加群申请（群主和管理员）\n"<<
-    "/22 groupname name;//删除群成员（群主和管理员）\n"<<
-    "/23 groupname name;//设置管理员（群主）\n"<<
-    "/24 groupname name;//删除管理员（群主）\n"<<
-    "/25 groupname;//解散群聊（群主）\n"<<
-    "/26 name filepath(绝对路径);//发送文件（可同时实现私聊和群发）\n"<<
-    "/27 file_id filesavepath(绝对路径);//下载文件\n"<<
-    "/28 name;//查看历史记录\n"<<
-    "/29 name;//删除好友\n"<<
-    "/30 filepath;//手动续传\n"<<
-    "/32 name;//读取未读消息\n";
+    "/19;//查看群聊申请（群主和管理员）\n"<<
+    "/20;//同意加群申请（群主和管理员）\n"<<
+    "/21;//拒绝加群申请（群主和管理员）\n"<<
+    "/22;//删除群成员（群主和管理员）\n"<<
+    "/23;//设置管理员（群主）\n"<<
+    "/24;//删除管理员（群主）\n"<<
+    "/25;//解散群聊（群主）\n"<<
+    "/26;//发送文件（可同时实现私聊和群发）\n"<<
+    "/27;//下载文件\n"<<
+    "/28;//查看历史记录\n"<<
+    "/29;//删除好友\n"<<
+    "/30;//手动续传\n"<<
+    "/32;//读取未读消息\n";
                 }
                 else if (line.rfind("UPLOAD_READY", 0) == 0) {
 
@@ -760,13 +760,14 @@ int main(int argc, char* argv[])
 {
     cerr << "======= CLIENT VERSION WITH /list DEBUG ========" << endl;
     cerr<<"目录\n"<<
-    "1 邮箱地址(@163.com);发送验证码,在登录，注册，忘记密码前发送\n"<<
-    "/2 name password email code(验证码);注册\n"<<
-    "/3 name email code;验证码登录\n"<<
-    "/31 name password;密码登录\n"<<
-    "/4 name password email code;//忘记密码\n"<<
+    "/1;发送验证码\n"<<
+    "/2;验证码注册\n"<<
+    "/3;验证码登录\n"<<
+    "/31;密码登录\n"<<
+    "/35;普通注册\n"
+    "/4;//忘记密码\n"<<
     "/33;//退出\n"
-    "/34 name password email;//注销\n"<<
+    "/34;//注销\n"<<
     "====================请输入你的命令===================\n";
     if (argc != 3) {
         cerr << "Usage: ./chat_client <server_ip> <port>" << endl;
@@ -850,7 +851,7 @@ int main(int argc, char* argv[])
                     continue;
                 }
                 string pwd_md5 = SHA256(SALT+p);
-                string msg = "注册 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
+                string msg = "验证码注册 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
                 
             }
@@ -919,6 +920,20 @@ int main(int argc, char* argv[])
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "忘记密码 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
+            }
+            else if(cmd_name=="35")
+            {
+                string u, p,w;
+                stringstream ss(args);
+                ss >> u >> p>>w;
+                if (u.empty() || p.empty()||w.empty())
+                 {
+                    cout << "Usage: /35 <username> <password> <email>" << endl;
+                    continue;
+                }
+                string pwd_md5 = SHA256(SALT+p);
+                string msg = "普通注册 " + u + " " + pwd_md5 + " "+w+"\n";
+               SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "5") 
             {
@@ -1017,7 +1032,7 @@ int main(int argc, char* argv[])
                 size_t pos = content.find_first_not_of(" ");
                 if (pos != string::npos) content = content.substr(pos);
                 if (target.empty() || content.empty()) {
-                    cout << "Usage: /msg <target> <message>" << endl;
+                    cout << "Usage: /10 <target> <message>" << endl;
                     continue;
                 }
                  string msg= "私聊 " + target + " " + content + "\n";
@@ -1063,7 +1078,7 @@ int main(int argc, char* argv[])
                 size_t pos = content.find_first_not_of(" ");
                 if (pos != string::npos) content = content.substr(pos);
                 if (target.empty() || content.empty()) {
-                    cout << "Usage: /approve <group> <name>" << endl;
+                    cout << "Usage: 20 <group> <name>" << endl;
                     continue;
                 }
                 string msg = "同意加入群聊 " + target + " " + content + "\n";
@@ -1082,7 +1097,7 @@ int main(int argc, char* argv[])
                 size_t pos = content.find_first_not_of(" ");
                 if (pos != string::npos) content = content.substr(pos);
                 if (target.empty() || content.empty()) {
-                    cout << "Usage: /rejectgroup <group> <name>" << endl;
+                    cout << "Usage: /21 <group> <name>" << endl;
                     continue;
                 }
                 string msg = "拒绝加入群聊 " + target + " " + content + "\n";
@@ -1100,7 +1115,7 @@ int main(int argc, char* argv[])
                 size_t pos = content.find_first_not_of(" ");
                 if (pos != string::npos) content = content.substr(pos);
                 if (group.empty() || content.empty()) {
-                    cout << "Usage: /groupchat <group_name> <message>" << endl;
+                    cout << "Usage: /15 <group_name> <message>" << endl;
                     continue;
                 }
                 string msg = "群聊 " + group + " " + content + "\n";
@@ -1127,7 +1142,7 @@ int main(int argc, char* argv[])
                 size_t pos = content.find_first_not_of(" ");
                 if (pos != string::npos) content = content.substr(pos);
                 if (group.empty() || content.empty()) {
-                    cout << "Usage: /del_groupmember <group_name> <message>" << endl;
+                    cout << "Usage: /22 <group_name> <message>" << endl;
                     continue;
                 }
                 string msg = "移除成员 " + group + " " + content + "\n";
@@ -1142,7 +1157,7 @@ int main(int argc, char* argv[])
             {
                 if(args.empty())
                 {
-                    cout<<"群名不能为空\n";
+                    cout << "Usage: /10 <group_name>" << endl;
                     continue;
                 }
                 string msg="退出群聊 "+args+"\n";
@@ -1152,7 +1167,7 @@ int main(int argc, char* argv[])
             {
                 if(args.empty())
                 {
-                    cout<<"群名不能为空\n";
+                    cout << "Usage: /25 <group_name>" << endl;
                     continue;
                 }
                 string msg="解散群聊 "+args+'\n';
@@ -1162,13 +1177,13 @@ int main(int argc, char* argv[])
             {
                 if(args.empty())
                 {
-                     cout<<"群名或者姓名不能为空\n";
+                     cout << "Usage: /23 <group_name> <name>" << endl;
                     continue;
                 }
                  size_t pos=args.find_first_of(' ');
                 if(pos==args.size()-1||pos==0||pos==string::npos)
                 {
-                    cout<<"群名或者姓名不能为空\n";
+                    cout << "Usage: /23 <group_name> <name>" << endl;
                     continue;
                 }
                 string qun=args.substr(0,pos);
@@ -1180,13 +1195,13 @@ int main(int argc, char* argv[])
             {
                 if(args.empty())
                 {
-                     cout<<"群名或者姓名不能为空\n";
+                     cout << "Usage: /24 <group_name> <name>" << endl;
                     continue;
                 }
                  size_t pos=args.find_first_of(' ');
                 if(pos==args.size()-1||pos==0||pos==string::npos)
                 {
-                    cout<<"群名或者姓名不能为空\n";
+                   cout << "Usage: /24 <group_name> <name>" << endl;
                     continue;
                 }
                 string qun=args.substr(0,pos);
@@ -1198,7 +1213,7 @@ int main(int argc, char* argv[])
             {
                  if(args.empty())
                 {
-                     cout<<"查询对象不能为空\n";
+                    cout << "Usage: /28 <name>" << endl;
                     continue;
                 }
                 string msg="查看聊天记录 "+args+"\n";
@@ -1213,7 +1228,7 @@ int main(int argc, char* argv[])
     }
     size_t space_pos = args.find(' ');
     if (space_pos == string::npos) {
-        cout << "请指定目标\n";
+          cout << "用法: /26 <目标> <文件路径>\n";
         continue;
     }
     string target = args.substr(0, space_pos);
@@ -1222,27 +1237,27 @@ int main(int argc, char* argv[])
     // 去除前导空格和尾部空格
    size_t start = filepath.find_first_not_of(" \t\r\n");
     if (start == string::npos) {
-        cout << "文件路径不能为空\n";
+         cout << "用法: /26 <目标> <文件路径>\n";
         continue;
     }
    size_t end = filepath.find_last_not_of(" \t\r\n");
     filepath = filepath.substr(start, end - start + 1);
 
     if (filepath.empty()) {
-        cout << "文件路径不能为空\n";
+         cout << "用法: /26 <目标> <文件路径>\n";
         continue;
     }
 
     ifstream file(filepath, ios::binary | ios::ate);
     if (!file.is_open()) {
-        cout << "无法打开文件，请检查路径和权限\n";
+        cout << "用法: /26 <目标> <文件路径>\n";
         continue;
     }
     size_t filesize = file.tellg();
     file.close();
 
     if (filesize == 0) {
-        cout << "文件为空，无法发送\n";
+         cout << "用法: /26 <目标> <文件路径>\n";
         continue;
     }
 
@@ -1285,20 +1300,20 @@ cerr << dec << endl;
             {
                  
               if (args.empty()) {
-                cout << "用法: /download <file_id> <文件路径>\n";
+                cout << "用法: /27 <file_id> <文件路径>\n";
                    continue;
                 }
 
     size_t space_pos = args.find(' ');
     if (space_pos == string::npos) {
-        cout << "请指定file_id\n";
+      cout << "用法: /27 <file_id> <文件路径>\n";
         continue;
     }
     string file_id = args.substr(0, space_pos);
     string filepath = args.substr(space_pos + 1);
     if (filepath.empty()) 
     {
-        cout << "文件路径不能为空\n";
+       cout << "用法: /27 <file_id> <文件路径>\n";
         continue;
     }
     pending_file_path = filepath;
@@ -1308,7 +1323,7 @@ cerr << dec << endl;
 
             
             else {
-                cout << "Unknown command. Available: /reg, /login, /add, /del, /list, /msg, /creategroup, /joingroup, /groupchat, /groupmembers, /mygroups, /quit" << endl;
+                cout << "Unknown command" << endl;
             }
         } else
          {
@@ -1322,7 +1337,7 @@ cerr << dec << endl;
                 string cmd= line + "\n";
               SSL_write1(ssl, cmd.c_str(), cmd.size());
             } else {
-                cout << "请先登录：/login <username> <password>" << endl;
+                cout << "请先登录" << endl;
             }
         }
     }
