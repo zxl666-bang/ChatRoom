@@ -1,3 +1,4 @@
+#include <hiredis/read.h>
 #include <mysql/field_types.h>
 #include <openssl/evp.h>
 #ifndef my_bool
@@ -609,6 +610,35 @@ bool verify_captcha(int ufd,const string&email,const string&code)
     freeReplyObject(reply1);
     return false;
 }
+void broadcast(int sender_fd, const string& msg)
+ {
+    vector<int> fds;
+    fds.reserve(clients.size());
+    for (const auto& pair : clients) {
+        if (pair.first != sender_fd && pair.second.logged_in)
+            fds.push_back(pair.first);
+    }
+    for (int fd : fds) {
+        send_message(fd, msg);
+    }
+}
+
+void send_unreadsize(const string&key,const string&sender,const string&target)
+{
+    cerr << "send_unreadsize: key=" << key << endl;
+redisReply* reply = (redisReply*)redisCommand(redis_conn, "GET %s", key.c_str());
+if (reply) {
+    cerr << "GET reply type=" << reply->type << ", str=" << (reply->str ? reply->str : "null") << endl;
+}
+    if(reply&&reply->type==REDIS_REPLY_STRING)
+    {
+         int count = stoi(reply->str);
+        string msg="你有来自"+sender+to_string(count)+"条未读消息，可以用/32 "+sender+"查看\n";
+        xitongbobao(target,msg);
+    }
+    if(reply)
+    freeReplyObject(reply);
+}
 
 bool regiser_user1(int ufd, const string& username, const string& pwd_hash, const string& email, const string& code) {
     // 1. 检查用户名是否存在
@@ -693,7 +723,7 @@ bool is_email1(const string&name,const string&email)
     }
    return (it[0][0]==email);
 }
-bool login(int fd,const string&name,const string&password,const string&email,const string&code)
+bool login1(int fd,const string&name,const string&email,const string&code)
 {
     if(!user_exists1(name))
     {
@@ -703,36 +733,35 @@ bool login(int fd,const string&name,const string&password,const string&email,con
     if(!verify_captcha(fd,email,code))
 
     {
+        send_message(fd,"验证码错误\n");
         return false;
     }
-    string sql="SELECT password_hash, email FROM users WHERE username= ? ";
+    return true;
+}
+
+bool login2(int fd,const string&name,const string&password)
+{
+     if(!user_exists1(name))
+    {
+        send_message(fd,"用户不存在\n");
+        return false;
+    }
+   string sql="SELECT password_hash, email FROM users WHERE username= ? ";
     vector<vector<string>>res=excute_select(sql,{name});
     if(res.empty())
     {
         return false;
     }
     
-        if(res[0][0]==password&&res[0][1]==email)
+        if(res[0][0]==password)
         {
              clients[fd].logged_in = true;
               clients[fd].username = name;
              name_to_fd[name] = fd;
             return true;
         }
-        else if(res[0][0]==password)
-        {
-            send_message(fd,"邮箱错误\n");
-            return false;
-        }
-        else if(res[0][1]==email)
-        {
-            send_message(fd,"密码错误\n");
-            return false;
-        }
-        else
-        {send_message(fd,"邮箱密码错误\n");
+        send_message(fd,"密码错误\n");
         return false;
-        }
 }
 
 void findpassword1(int fd,const string&name,const string&email,const string&code,const string&password)
@@ -1343,19 +1372,36 @@ string block="blocklist:"+target_name;
     auto it = name_to_fd.find(target_name);
     if (it != name_to_fd.end()) 
     {
-            send_message(it->second, msg);
+             string key = "unread:" + target_name+":"+c.username;
+             redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
             send_message(sender_fd, "发送完成\n");
            string place=(c.username<target_name)?c.username+":"+target_name:target_name+":"+c.username;
            store_history(c.username,place,content);
-           redisCommand(redis_conn,"INCR unread %s %s",target_name.c_str(),clients[sender_fd].username.c_str());
-          
+           string key1="unread_size:"+ target_name+":"+c.username;
+           redisReply* incr_reply = (redisReply*)redisCommand(redis_conn, "INCR %s", key1.c_str());
+if (incr_reply) {
+    cerr << "INCR success, new value: " << incr_reply->integer << endl;
+    freeReplyObject(incr_reply);
+} else {
+    cerr << "INCR failed" << endl;
+}
+           send_unreadsize(key1,clients[sender_fd].username,target_name);
     } 
     else
      {
         send_message(sender_fd, "对方离线，已存储\n");
-        string key = "offline:" + target_name;
+        string key = "unread:" + target_name+":"+c.username;
         redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
-        redisCommand(redis_conn,"INCR unread %s %s",target_name.c_str(),clients[sender_fd].username.c_str());
+        string key2="offline:"+target_name;
+        redisCommand(redis_conn,"RPUSH %s %s",key2.c_str(),c.username.c_str());
+        string key3="unread_size:" + target_name+":"+c.username;
+        redisReply* incr_reply = (redisReply*)redisCommand(redis_conn, "INCR %s", key3.c_str());
+if (incr_reply) {
+    cerr << "INCR success, new value: " << incr_reply->integer << endl;
+    freeReplyObject(incr_reply);
+} else {
+    cerr << "INCR failed" << endl;
+}
         string place=(c.username<target_name)?c.username+":"+target_name:target_name+":"+c.username;
            store_history(c.username,place,content);
     }
@@ -2107,6 +2153,7 @@ void qunliao(int sender_fd, const string& qun, const string& content)
         return;
     }
     freeReplyObject(reply);
+    auto c=clients[sender_fd];
     string msg = "[群聊 " + qun + "] " + clients[sender_fd].username + ": " + content + "\n";
     reply = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", members_key.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_ARRAY)
@@ -2124,12 +2171,33 @@ void qunliao(int sender_fd, const string& qun, const string& content)
         auto it = name_to_fd.find(member);
         if (it != name_to_fd.end()) 
         {
-            send_message(it->second, msg);
+             string key = "unread:" + member+":"+qun;
+             redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
+            send_message(sender_fd, "发送完成\n");
+           string key1="unread_size:"+ member+":"+qun;
+           redisReply* incr_reply = (redisReply*)redisCommand(redis_conn, "INCR %s", key1.c_str());
+if (incr_reply) {
+    cerr << "INCR success, new value: " << incr_reply->integer << endl;
+    freeReplyObject(incr_reply);
+} else {
+    cerr << "INCR failed" << endl;
+}
+           send_unreadsize(key1,qun,member);
         } 
         else
          {
-            string key = "offline:" + member;
-            redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
+             string key = "unread:" + member+":"+qun;
+        redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
+        string key2="offline:"+member;
+        redisCommand(redis_conn,"RPUSH %s %s",key2.c_str(),qun.c_str());
+        string key3="unread_size:" + member+":"+qun;
+        redisReply* incr_reply = (redisReply*)redisCommand(redis_conn, "INCR %s", key3.c_str());
+if (incr_reply) {
+    cerr << "INCR success, new value: " << incr_reply->integer << endl;
+    freeReplyObject(incr_reply);
+} else {
+    cerr << "INCR failed" << endl;
+}
         }
     }
     freeReplyObject(reply);
@@ -2259,12 +2327,46 @@ void lixian(int ufd)
     }
     for (size_t i = 0; i < reply->elements; ++i) 
     {
+        string key2="unread_size:"+clients[ufd].username+":"+reply->element[i]->str;
+        send_unreadsize(key2,reply->element[i]->str,clients[ufd].username);
+    }
+    freeReplyObject(reply);
+    redisCommand(redis_conn, "DEL %s", key.c_str());
+    send_message(ufd, "消息拉取完成\n");
+}
+
+void Read(int ufd,const string&name) 
+{
+    string key = "unread:" + clients[ufd].username+":"+name;
+    string count_key = "unread_size:" + clients[ufd].username + ":" + name;
+    redisReply* reply = (redisReply*)redisCommand(redis_conn, "LRANGE %s 0 -1", key.c_str());
+    if (reply == nullptr) 
+    { 
+        send_message(ufd, "拉取未读消息失败\n"); 
+        return; 
+    }
+    if (reply->type != REDIS_REPLY_ARRAY)
+     {
+
+        send_message(ufd, "未读消息格式错误\n");
+        if (reply) freeReplyObject(reply);
+        return;
+    }
+    if (reply->elements == 0)
+     {
+        send_message(ufd, "无未读消息\n");
+        freeReplyObject(reply);
+        return;
+    }
+    for (size_t i = 0; i < reply->elements; ++i) 
+    {
         string msg = string(reply->element[i]->str) + '\n';
         send_message(ufd, msg);
     }
     freeReplyObject(reply);
     redisCommand(redis_conn, "DEL %s", key.c_str());
-    send_message(ufd, "离线消息拉取完成\n");
+     redisCommand(redis_conn, "DEL %s", count_key.c_str());
+    send_message(ufd, "未读消息拉取完成\n");
 }
 
 void tuiqun(int ufd,const string&qun)
@@ -2433,19 +2535,6 @@ void jiesan(int ufd,const string&qun)
     return;
 }
 
-void broadcast(int sender_fd, const string& msg)
- {
-    vector<int> fds;
-    fds.reserve(clients.size());
-    for (const auto& pair : clients) {
-        if (pair.first != sender_fd && pair.second.logged_in)
-            fds.push_back(pair.first);
-    }
-    for (int fd : fds) {
-        send_message(fd, msg);
-    }
-}
-
 
 void handle_command(int fd, const string& line)
  {
@@ -2478,13 +2567,13 @@ void handle_command(int fd, const string& line)
             send_message(fd,"注册失败\n");
         }
     }
-    else if (cmd == "登录") {
-    string username, password_hash, email, code;
-    if (!(iss >> username >> password_hash >> email >> code)) {
-        send_message(fd, "用法: 登录 <用户名> <密码> <邮箱> <验证码>\n");
+    else if (cmd == "验证码登录") {
+    string username, email, code;
+    if (!(iss >> username  >> email >> code)) {
+        send_message(fd, "用法: 登录 <用户名> <邮箱> <验证码>\n");
         return;
     }
-    if (login(fd, username, password_hash, email, code)) {
+    if (login1(fd, username, email, code)) {
         clients[fd].logged_in = true;
         clients[fd].username = username;
         name_to_fd[username] = fd;
@@ -2493,6 +2582,25 @@ void handle_command(int fd, const string& line)
         broadcast(fd, "[系统] " + username + " 加入了聊天。\n");
         lixian(fd);
     } else {
+        send_message(fd, "登录失败（用户名、密码、邮箱或验证码错误）\n");
+    }
+   }
+    else if (cmd == "密码登录") {
+    string username, password_hash;
+    if (!(iss >> username >> password_hash )) {
+        send_message(fd, "用法: 登录 <用户名> <密码>\n");
+        return;
+    }
+    if (login2(fd, username,password_hash)) {
+        clients[fd].logged_in = true;
+        clients[fd].username = username;
+        name_to_fd[username] = fd;
+        set_online(username);
+        send_message(fd, "LOGIN_OK "+username+"\n");
+        broadcast(fd, "[系统] " + username + " 加入了聊天。\n");
+        lixian(fd);
+    } 
+    else {
         send_message(fd, "登录失败（用户名、密码、邮箱或验证码错误）\n");
     }
    }
@@ -2576,6 +2684,16 @@ void handle_command(int fd, const string& line)
         }
         content = content.substr(pos);
         siliao(fd, target, content);
+    }
+    else if(cmd=="读取未读消息")
+    {
+        string name;
+        if(!(iss>>name))
+        {
+            send_message(fd,"读取目标不能为空\n");
+            return;
+        }
+        Read(fd,name);
     }
     else if (cmd == "创建群聊")
      {
