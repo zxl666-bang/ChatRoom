@@ -2,6 +2,8 @@
 #include <leveldb/iterator.h>
 #include <mysql/field_types.h>
 #include <openssl/evp.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #ifndef my_bool
 #define my_bool unsigned char
 #endif
@@ -2784,7 +2786,7 @@ void handle_command(int fd, const string& line)
     else if(cmd=="注销")
     {
          string username, password_hash;
-    if (!(iss >> username >> password_hash)) {
+        if (!(iss >> username >> password_hash)) {
         send_message(fd, "用法: 登录 <用户名> <密码>\n");
         return;
     }
@@ -2845,6 +2847,10 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "私聊")
      {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string target, content;
         iss >> target;
         if (target.empty())
@@ -2864,6 +2870,10 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="读取未读消息")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string name;
         if(!(iss>>name))
         {
@@ -2874,6 +2884,10 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "创建群聊")
      {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string qun;
         if (!(iss >> qun)) 
         { 
@@ -2884,6 +2898,10 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "加入群聊")
      {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string qun;
         if (!(iss >> qun))
          { 
@@ -2894,6 +2912,10 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="查看群聊申请列表")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
        string qun;
         if (!(iss >> qun))
          { 
@@ -2904,6 +2926,10 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="同意加入群聊")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string qun,name;
         iss>>qun>>name;
         if(qun.empty())
@@ -2920,6 +2946,10 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="拒绝加入群聊")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string qun,name;
         iss>>qun>>name;
         if(qun.empty())
@@ -2936,6 +2966,10 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "群聊")
      {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string qun, content;
         iss >> qun;
         if (qun.empty())
@@ -2955,6 +2989,10 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="解散群聊")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string group;
         if(!(iss>>group))
         {
@@ -2964,6 +3002,10 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd =="移除成员")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
          string qun, content;
         iss >> qun;
         if (qun.empty())
@@ -2983,6 +3025,10 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "查看群成员")
      {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string qun;
         if (!(iss >> qun))
          { 
@@ -2993,10 +3039,18 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "查看群聊列表") 
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         chaqun(fd);
     }
     else if(cmd=="查看聊天记录")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string name;
         if(!(iss>>name))
         {
@@ -3007,6 +3061,10 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="设置管理员")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string group,name;
         if(!(iss>>group>>name))
         {
@@ -3017,6 +3075,10 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="删除管理员")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
 
         string group,name;
         if(!(iss>>group>>name))
@@ -3028,6 +3090,10 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="退出群聊")
     {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         string group;
         if(!(iss>>group))
         {
@@ -3037,6 +3103,11 @@ void handle_command(int fd, const string& line)
         tuiqun(fd,group);
     }
     else if (cmd == "UPLOAD_FILE") {
+
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
     string target, filename, filesize_str;
     if (!(iss >> target >> filename >> filesize_str)) {
         send_message(fd, "用法: UPLOAD_FILE <目标> <文件名> <文件大小>\n");
@@ -3065,6 +3136,10 @@ void handle_command(int fd, const string& line)
     handle_file_command(redis_conn, fd, sender, target, filename, filesize);
 }
     else if (cmd == "RESUME_UPLOAD") {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
         if (!clients[fd].logged_in) {
         send_message(fd, "请先登录\n");
         return;
@@ -3078,6 +3153,10 @@ void handle_command(int fd, const string& line)
    Resend_file(fd,sender,filename,redis_conn);
 }
     else if (cmd == "DOWNLOAD_FILE") {
+        if(clients[fd].logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
     string file_id;
     if (!(iss >> file_id)) {
         send_message(fd, "用法: DOWNLOAD_FILE <file_id>\n");
@@ -3123,21 +3202,9 @@ void handle_command(int fd, const string& line)
     else if (cmd == "退出")
      {
    string leave_msg = "[系统] " + clients[fd].username + " 离开了。\n";
-broadcast(fd, leave_msg); 
-close_connection(fd);       
+   broadcast(fd, leave_msg); 
+   close_connection(fd);       
       
-    }
-    else {
-        if (client.logged_in) 
-        {
-            string msg = client.username + ": " + line + "\n";
-            broadcast(fd, msg);
-            cout << msg;
-        } 
-        else
-         {
-            send_message(fd, "请先登录\n");
-        }
     }
 }
  bool do_handshake(int fd) {
