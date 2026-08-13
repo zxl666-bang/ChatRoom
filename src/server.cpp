@@ -1,4 +1,5 @@
 #include <hiredis/read.h>
+#include <leveldb/iterator.h>
 #include <mysql/field_types.h>
 #include <openssl/evp.h>
 #ifndef my_bool
@@ -610,6 +611,169 @@ bool verify_captcha(int ufd,const string&email,const string&code)
     freeReplyObject(reply1);
     return false;
 }
+
+void zhuxiao(int fd, const string& name, const string& password) {
+    if (!user_exists1(name)) {
+        send_message(fd, "用户不存在\n");
+        return;
+    }
+
+    string sql1 = "SELECT password_hash, email FROM users WHERE username = ?";
+    auto res = excute_select(sql1, {name});
+    if (res.empty()) {
+        send_message(fd, "查询用户信息失败\n");
+        return;
+    }
+    if (res[0][0] != password) {
+        send_message(fd, "密码错误\n");
+        return;
+    }
+    send_message(fd, "密码正确，开始注销...\n");
+
+    if (history_db) {
+        leveldb::ReadOptions ro;
+        leveldb::Iterator* it = history_db->NewIterator(ro);
+        vector<string> keys_to_delete;
+
+        for (it->SeekToFirst(); it->Valid(); it->Next()) {
+            string key = it->key().ToString();
+            const string prefix = "history:";
+            if (key.rfind(prefix, 0) != 0) continue;
+            string rest = key.substr(prefix.length());
+            size_t last_colon = rest.rfind(':');
+            if (last_colon == string::npos) continue;
+            string without_random = rest.substr(0, last_colon);
+            size_t second_last_colon = without_random.rfind(':');
+            if (second_last_colon == string::npos) continue;
+            string place = without_random.substr(0, second_last_colon);
+            if (place.find(name) != string::npos) {
+                keys_to_delete.push_back(key);
+            }
+        }
+        delete it;
+
+        string groups_key = "user:" + name + ":groups:";
+        redisReply* reply_groups = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", groups_key.c_str());
+        if (reply_groups && reply_groups->type == REDIS_REPLY_ARRAY) {
+            leveldb::Iterator* it2 = history_db->NewIterator(ro);
+            for (size_t i = 0; i < reply_groups->elements; ++i) {
+                string group_name = reply_groups->element[i]->str;
+                string prefix = "history:group:" + group_name + ":";
+                for (it2->Seek(prefix); it2->Valid() && it2->key().starts_with(prefix); it2->Next()) {
+                    string key = it2->key().ToString();
+                    string value = it2->value().ToString();
+                    if (value.rfind(name + ":", 0) == 0) { 
+                        keys_to_delete.push_back(key);
+                    }
+                }
+            }
+            delete it2;
+            freeReplyObject(reply_groups);
+        } else if (reply_groups) {
+            freeReplyObject(reply_groups);
+        }
+
+        leveldb::WriteOptions wo;
+        for (const string& k : keys_to_delete) {
+            history_db->Delete(wo, k);
+        }
+        send_message(fd, "历史记录已清除\n");
+    }
+
+    string friends_key = "friends:" + name;
+    redisReply* reply_friends = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", friends_key.c_str());
+    if (reply_friends && reply_friends->type == REDIS_REPLY_ARRAY) {
+        for (size_t i = 0; i < reply_friends->elements; ++i) {
+            string friend_name = reply_friends->element[i]->str;
+            string key = "friends:" + friend_name;
+            redisCommand(redis_conn, "SREM %s %s", key.c_str(), name.c_str());
+        }
+        freeReplyObject(reply_friends);
+    } else if (reply_friends) {
+        freeReplyObject(reply_friends);
+    }
+    redisCommand(redis_conn, "DEL %s", friends_key.c_str());
+    send_message(fd, "好友列表已清空\n");
+
+    string groups_key2 = "user:" + name + ":groups:";
+    redisReply* reply_groups2 = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", groups_key2.c_str());
+    if (reply_groups2 && reply_groups2->type == REDIS_REPLY_ARRAY) {
+        for (size_t i = 0; i < reply_groups2->elements; ++i) {
+            string group_name = reply_groups2->element[i]->str;
+            string group_owner="group:"+group_name;
+            string members_key = "group:" + group_name + ":members:";
+            redisCommand(redis_conn, "SREM %s %s", members_key.c_str(), name.c_str());
+            string admin_key = "group:" + group_name + ":guanli:";
+            redisCommand(redis_conn, "SREM %s %s", admin_key.c_str(), name.c_str());
+            redisReply*reply=(redisReply*)redisCommand(redis_conn,"HGET %s owner",group_owner.c_str());
+            if(reply&&reply->type==REDIS_REPLY_STRING&&string(reply->str)==name)
+            {
+                 redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SMEMBERS %s",members_key.c_str());
+                 if(reply2&&reply2->type==REDIS_REPLY_ARRAY)
+                 {
+                    for(size_t j=0;j<reply2->elements;j++)
+                    {
+                        string group="user:"+string(reply2->element[j]->str)+":groups:";
+                        redisCommand(redis_conn,"SREM %s %s",group.c_str(),group_name.c_str());
+                    }
+                 }
+                 if(reply2)
+                 {
+                    freeReplyObject(reply2);
+                 }
+                 redisCommand(redis_conn, "DEL %s", ("group:" + group_name + ":members:").c_str());
+                 redisCommand(redis_conn, "DEL %s", ("group:" + group_name + ":guanli:").c_str());
+                redisCommand(redis_conn,"DEL %s",("group:"+group_name).c_str());
+            }
+            if(reply)
+            {
+                freeReplyObject(reply);
+            }
+        }
+        freeReplyObject(reply_groups2);
+    } else if (reply_groups2) {
+        freeReplyObject(reply_groups2);
+    }
+    redisCommand(redis_conn, "DEL %s", groups_key2.c_str());
+    send_message(fd, "群组关系已清空\n");
+
+    redisCommand(redis_conn, "DEL %s", ("user:" + name).c_str());
+    redisCommand(redis_conn, "DEL %s", ("blocklist:" + name).c_str());
+    redisCommand(redis_conn, "DEL %s", ("haoyoushenqing:" + name).c_str());
+    redisCommand(redis_conn, "DEL %s", ("online:" + name).c_str());
+    redisCommand(redis_conn, "DEL %s", ("offline:" + name).c_str());
+
+    string sql_email = "SELECT email FROM users WHERE username = ?";
+    auto res_email = excute_select(sql_email, {name});
+    if (!res_email.empty()) {
+        string email_key = "email:" + res_email[0][0];
+        redisCommand(redis_conn, "DEL %s", email_key.c_str());
+    }
+
+    vector<string> patterns = {"unread:" + name + ":*", "unread_size:" + name + ":*"};
+    for (const string& pat : patterns) {
+        redisReply* r = (redisReply*)redisCommand(redis_conn, "KEYS %s", pat.c_str());
+        if (r && r->type == REDIS_REPLY_ARRAY) {
+            for (size_t i = 0; i < r->elements; ++i) {
+                redisCommand(redis_conn, "DEL %s", r->element[i]->str);
+            }
+            freeReplyObject(r);
+        } else if (r) {
+            freeReplyObject(r);
+        }
+    }
+    send_message(fd, "其他信息已清除\n");
+
+    string sql_del = "DELETE FROM users WHERE username = ?";
+    int64_t rows = excute_updata(sql_del, {name}); 
+    if (rows == 1) {
+        send_message(fd, "注销成功，账户已删除\n");
+        close_connection(fd);
+    } else {
+        send_message(fd, "注销失败，请稍后重试\n");
+    }
+}
+
 void broadcast(int sender_fd, const string& msg)
  {
     vector<int> fds;
@@ -641,14 +805,13 @@ if (reply) {
 }
 
 bool regiser_user1(int ufd, const string& username, const string& pwd_hash, const string& email, const string& code) {
-    // 1. 检查用户名是否存在
+   
     cout << "regiser_user: email = " << email << ", code = " << code << endl;
     if (user_exists1(username)) {
         send_message(ufd, "用户名已存在\n");
         return false;
     }
 
-    // 2. 检查邮箱是否已被绑定
     string email_key = "email:" + email;
     redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", email_key.c_str());
     if (reply && reply->type == REDIS_REPLY_INTEGER && reply->integer == 1) {
@@ -658,13 +821,11 @@ bool regiser_user1(int ufd, const string& username, const string& pwd_hash, cons
     }
     if (reply) freeReplyObject(reply);
 
-    // 3. 验证验证码（内部已自动删除验证码）
     if (!verify_captcha(ufd, email, code)) {
-        // verify_captcha 会发送错误消息，无需额外处理
+     
         return false;
     }
 
-    // 4. 创建用户记录（同时设置 password 和 email）
     string user_key = "user:" + username;
     redisReply* reply2 = (redisReply*)redisCommand(redis_conn, "HSET %s password %s email %s",
                                                     user_key.c_str(), pwd_hash.c_str(), email.c_str());
@@ -675,7 +836,6 @@ bool regiser_user1(int ufd, const string& username, const string& pwd_hash, cons
     }
     freeReplyObject(reply2);
 
-    // 5. 存储反向映射（邮箱 -> 用户名）
     redisCommand(redis_conn, "SET %s %s", email_key.c_str(), username.c_str());
 
     send_message(ufd, "注册成功\n");
@@ -2567,6 +2727,7 @@ void handle_command(int fd, const string& line)
             send_message(fd,"注册失败\n");
         }
     }
+   
     else if (cmd == "验证码登录") {
     string username, email, code;
     if (!(iss >> username  >> email >> code)) {
@@ -2612,6 +2773,15 @@ void handle_command(int fd, const string& line)
         return;
     }
     findpassword1(fd,username,email,code,password_hash);
+    }
+    else if(cmd=="注销")
+    {
+         string username, password_hash;
+    if (!(iss >> username >> password_hash)) {
+        send_message(fd, "用法: 登录 <用户名> <密码>\n");
+        return;
+    }
+    zhuxiao(fd,username,password_hash);
     }
     else if (cmd == "心跳") 
     {
