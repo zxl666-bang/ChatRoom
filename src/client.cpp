@@ -4,6 +4,7 @@
 #include <hiredis/hiredis.h>
 #include <iostream>
 #include <cstring>
+#include <termios.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -16,6 +17,7 @@
 #include <chrono>
 #include<fstream>
 #include <sstream>
+#include<termio.h>
 #include <openssl/evp.h>
 #include <openssl/ssl.h>      // 核心 SSL/TLS 函数，如 SSL_new、SSL_read、SSL_write
 #include <openssl/err.h>      // 错误处理，如 ERR_print_errors_fp、ERR_get_error
@@ -44,6 +46,7 @@ string SHA256(const string& input)
         sprintf(out + i*2, "%02x", digest[i]);
     return string(out);
 }
+
 int sockfd;
 bool logged_in = false;
 string username;
@@ -607,6 +610,33 @@ void recv_thread_func() {
                     }
 
                     std::cout << "登录成功\n";
+                    cerr<< "/5 name;//添加好友\n"<<
+    "/6;//列出好友列表\n"<<
+    "/7 name;//同意好友申请\n"<<
+    "/8 name;//拒绝好友申请\n"<<
+    "/9;//列出好友\n"<<
+    "/10 name msg;//私聊\n"<<
+    "/11 name;//屏蔽好友\n"<<
+    "/12 name;//解除屏蔽\n"<<
+    "/13 groupname;//申请加入群聊;\n"<<
+    "/14 groupname;//推出群聊;\n"<<
+    "/15 groupname msg;//群聊；\n"<<
+    "/16 groupname;//建群;\n"<<
+    "/17 groupname;//查看群聊成员;\n"<<
+    "/18;//查看自己的群聊;\n"<<
+    "/19 groupname;//查看群聊申请（群主和管理员）\n"<<
+    "/20 groupname name;//同意加群申请（群主和管理员）\n"<<
+    "/21 groupname name;//拒绝加群申请（群主和管理员）\n"<<
+    "/22 groupname name;//删除群成员（群主和管理员）\n"<<
+    "/23 groupname name;//设置管理员（群主）\n"<<
+    "/24 groupname name;//删除管理员（群主）\n"<<
+    "/25 groupname;//解散群聊（群主）\n"<<
+    "/26 name filepath(绝对路径);//发送文件（可同时实现私聊和群发）\n"<<
+    "/27 file_id filesavepath(绝对路径);//下载文件\n"<<
+    "/28 name;//查看历史记录\n"<<
+    "/29 name;//删除好友\n"<<
+    "/30 filepath;//手动续传\n"<<
+    "/32 name;//读取未读消息\n";
                 }
                 else if (line.rfind("UPLOAD_READY", 0) == 0) {
 
@@ -735,33 +765,8 @@ int main(int argc, char* argv[])
     "/3 name email code;验证码登录\n"<<
     "/31 name password;密码登录\n"<<
     "/4 name password email code;//忘记密码\n"<<
-    "/5 name;//添加好友\n"<<
-    "/6;//列出好友列表\n"<<
-    "/7 name;//同意好友申请\n"<<
-    "/8 name;//拒绝好友申请\n"<<
-    "/9;//列出好友\n"<<
-    "/10 name msg;//私聊\n"<<
-    "/11 name;//屏蔽好友\n"<<
-    "/12 name;//解除屏蔽\n"<<
-    "/13 groupname;//申请加入群聊;\n"<<
-    "/14 groupname;//推出群聊;\n"<<
-    "/15 groupname msg;//群聊；\n"<<
-    "/16 groupname;//建群;\n"<<
-    "/17 groupname;//查看群聊成员;\n"<<
-    "/18;//查看自己的群聊;\n"<<
-    "/19 groupname;//查看群聊申请（群主和管理员）\n"<<
-    "/20 groupname name;//同意加群申请（群主和管理员）\n"<<
-    "/21 groupname name;//拒绝加群申请（群主和管理员）\n"<<
-    "/22 groupname name;//删除群成员（群主和管理员）\n"<<
-    "/23 groupname name;//设置管理员（群主）\n"<<
-    "/24 groupname name;//删除管理员（群主）\n"<<
-    "/25 groupname;//解散群聊（群主）\n"<<
-    "/26 name filepath(绝对路径);//发送文件（可同时实现私聊和群发）\n"<<
-    "/27 file_id filesavepath(绝对路径);//下载文件\n"<<
-    "/28 name;//查看历史记录\n"<<
-    "/29 name;//删除好友\n"<<
-    "/30 filepath;//手动续传\n"<<
-    "/32 name;//读取未读消息\n"<<
+    "/33;//退出\n"
+    "/34 name password email;//注销\n"<<
     "====================请输入你的命令===================\n";
     if (argc != 3) {
         cerr << "Usage: ./chat_client <server_ip> <port>" << endl;
@@ -820,7 +825,7 @@ int main(int argc, char* argv[])
     while (getline(cin, line)) 
     {
           
-        if (line == "/quit") 
+        if (line == "/33") 
         {
             string msg = "退出\n";
            SSL_write1(ssl, msg.c_str(), msg.size());
@@ -873,6 +878,20 @@ int main(int argc, char* argv[])
                 string msg = "验证码登录 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
+            else if(cmd_name=="34")
+            {
+                string u, p;
+                stringstream ss(args);
+                ss >> u >> p;
+                if (u.empty() || p.empty())
+                 {
+                    cout << "Usage: /34 <username> <password>" << endl;
+                    continue;
+                }
+                string pwd_md5 = SHA256(SALT+p);
+                string msg = "注销 " + u + " " + pwd_md5+"\n";
+                SSL_write1(ssl, msg.c_str(), msg.size());
+            }
             else if (cmd_name == "31") 
             {
                 string u, p,w,r;
@@ -884,7 +903,7 @@ int main(int argc, char* argv[])
                     continue;
                 }
                 string pwd_md5 = SHA256(SALT+p);
-                string msg = "密码登录 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
+                string msg = "密码登录 " + u + " " + pwd_md5+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="4")
