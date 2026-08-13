@@ -216,7 +216,7 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
 
         
 
-        if (!SSL_write1(        ssl1, &net_len, sizeof(net_len))) {
+        if (!SSL_write1(ssl1, &net_len, sizeof(net_len))) {
 
             cerr << "[UPLOAD] "   << "发送长度头失败" << endl;
 
@@ -729,6 +729,40 @@ void recv_thread_func() {
 int main(int argc, char* argv[]) 
 {
     cerr << "======= CLIENT VERSION WITH /list DEBUG ========" << endl;
+    cerr<<"目录\n"<<
+    "1 邮箱地址(@163.com);发送验证码,在登录，注册，忘记密码前发送\n"<<
+    "/2 name password email code(验证码);注册\n"<<
+    "/3 name email code;验证码登录\n"<<
+    "/31 name password;密码登录\n"<<
+    "/4 name password email code;//忘记密码\n"<<
+    "/5 name;//添加好友\n"<<
+    "/6;//列出好友列表\n"<<
+    "/7 name;//同意好友申请\n"<<
+    "/8 name;//拒绝好友申请\n"<<
+    "/9;//列出好友\n"<<
+    "/10 name msg;//私聊\n"<<
+    "/11 name;//屏蔽好友\n"<<
+    "/12 name;//解除屏蔽\n"<<
+    "/13 groupname;//申请加入群聊;\n"<<
+    "/14 groupname;//推出群聊;\n"<<
+    "/15 groupname msg;//群聊；\n"<<
+    "/16 groupname;//建群;\n"<<
+    "/17 groupname;//查看群聊成员;\n"<<
+    "/18;//查看自己的群聊;\n"<<
+    "/19 groupname;//查看群聊申请（群主和管理员）\n"<<
+    "/20 groupname name;//同意加群申请（群主和管理员）\n"<<
+    "/21 groupname name;//拒绝加群申请（群主和管理员）\n"<<
+    "/22 groupname name;//删除群成员（群主和管理员）\n"<<
+    "/23 groupname name;//设置管理员（群主）\n"<<
+    "/24 groupname name;//删除管理员（群主）\n"<<
+    "/25 groupname;//解散群聊（群主）\n"<<
+    "/26 name filepath(绝对路径);//发送文件（可同时实现私聊和群发）\n"<<
+    "/27 file_id filesavepath(绝对路径);//下载文件\n"<<
+    "/28 name;//查看历史记录\n"<<
+    "/29 name;//删除好友\n"<<
+    "/30 filepath;//手动续传\n"<<
+    "/32 name;//读取未读消息\n"<<
+    "====================请输入你的命令===================\n";
     if (argc != 3) {
         cerr << "Usage: ./chat_client <server_ip> <port>" << endl;
         return 1;
@@ -800,14 +834,14 @@ int main(int argc, char* argv[])
             size_t space_pos = cmd.find(' ');
             string cmd_name = (space_pos == string::npos) ? cmd : cmd.substr(0, space_pos);
             string args = (space_pos == string::npos) ? "" : cmd.substr(space_pos + 1);
-            if (cmd_name == "reg") 
+            if (cmd_name == "2") 
             {
                string u, p,w,r;
                 stringstream ss(args);
                 ss >> u >> p>>w>>r;
                 if (u.empty() || p.empty()||w.empty()||r.empty())
                  {
-                    cout << "Usage: /reg <username> <password> <email> <code>" << endl;
+                    cout << "Usage: /2 <username> <password> <email> <code>" << endl;
                     continue;
                 }
                 string pwd_md5 = SHA256(SALT+p);
@@ -815,126 +849,148 @@ int main(int argc, char* argv[])
                SSL_write1(ssl, msg.c_str(), msg.size());
                 
             }
-            else if(cmd_name=="send_captcha")
+            else if(cmd_name=="1")
             {
                  if (args.empty()) 
                 {
-                    cout << "Usage: /send_captcha <email>" << endl;
+                    cout << "Usage: /1 <email>" << endl;
                     continue;
                 }
                 string msg = "发送验证码 " + args + "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "login") 
+            else if (cmd_name == "3") 
             {
                 string u, p,w,r;
                 stringstream ss(args);
-                ss >> u >> p>>w>>r;
-                if (u.empty() || p.empty()||w.empty()||r.empty())
+                ss >> u >> p>>w;
+                if (u.empty() || p.empty()||w.empty())
                  {
-                    cout << "Usage: /login <username> <password> <email> <code>" << endl;
+                    cout << "Usage: /3 <username> <email> <code>" << endl;
                     continue;
                 }
                 string pwd_md5 = SHA256(SALT+p);
-                string msg = "登录 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
+                string msg = "验证码登录 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="forgetpassword")
+            else if (cmd_name == "31") 
+            {
+                string u, p,w,r;
+                stringstream ss(args);
+                ss >> u >> p;
+                if (u.empty() || p.empty())
+                 {
+                    cout << "Usage: /31 <username> <password>" << endl;
+                    continue;
+                }
+                string pwd_md5 = SHA256(SALT+p);
+                string msg = "密码登录 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
+                SSL_write1(ssl, msg.c_str(), msg.size());
+            }
+            else if(cmd_name=="4")
             {
                   string u, p,w,r;
                 stringstream ss(args);
                 ss >> u >> p>>w>>r;
                 if (u.empty() || p.empty()||w.empty()||r.empty())
                  {
-                    cout << "Usage: /forgetpassword <username> <password> <email> <code>" << endl;
+                    cout << "Usage: /4 <username> <password> <email> <code>" << endl;
                     continue;
                 }
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "忘记密码 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "add") 
+            else if (cmd_name == "5") 
             {
                 if (args.empty()) 
                 {
-                    cout << "Usage: /add <friend_name>" << endl;
+                    cout << "Usage: /5 <friend_name>" << endl;
                     continue;
                 }
                 string msg = "添加好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="block")
+            else if(cmd_name=="11")
             {
                  if (args.empty()) 
                 {
-                    cout << "Usage: /block <friend_name>" << endl;
+                    cout << "Usage: /11 <friend_name>" << endl;
                     continue;
                 }
                 string msg = "屏蔽 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="unblock")
+            else if(cmd_name=="12")
             {
                  if (args.empty()) 
                 {
-                    cout << "Usage: /unblock <friend_name>" << endl;
+                    cout << "Usage: /12 <friend_name>" << endl;
                     continue;
                 }
                 string msg = "解除屏蔽 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name=="list_request")
+            else if (cmd_name=="6")
             {
                 string msg="列出好友申请\n";
                 SSL_write1(ssl,msg.c_str(),msg.size());
             }
-            else if(cmd_name=="accept")
+            else if(cmd_name=="7")
             {
                if (args.empty()) 
                 {
-                    cout << "Usage: /accpet <name>" << endl;
+                    cout << "Usage: /7 <name>" << endl;
                     continue;
                 }
                 string msg = "同意添加好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="reject")
+            else if(cmd_name=="8")
             {
                if (args.empty()) 
                 {
-                    cout << "Usage: /reject <name>" << endl;
+                    cout << "Usage: /8 <name>" << endl;
                     continue;
                 }
                 string msg = "拒绝添加好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "del")
+            
+            else if (cmd_name == "29")
              {
                 if (args.empty()) 
                 {
-                    cout << "Usage: /del <friend_name>" << endl;
+                    cout << "Usage: /29 <friend_name>" << endl;
                     continue;
                 }
                 string msg = "删除好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "list") {
+            else if (cmd_name == "9") {
     string msg = "好友列表\n";
-    cerr << "Sending list command: " << msg;
-    cerr << "About to lock ssl_mtu" << endl;
-    cerr << "Lock acquired" << endl;
-    cerr << "Before SSL_write" << endl;
     if (!SSL_write1(ssl, msg.c_str(), msg.size())) {
     cerr << "发送 list 命令失败" << endl;
 }
     cerr << "list sent" << endl;
 }
-            else if (cmd_name == "msg") 
+            else if(cmd_name=="32")
+{
+  if(args.empty())
+  {
+    cerr<<"/32 name\n";
+    continue;
+  }
+    string msg="读取未读消息 "+args+'\n';
+    SSL_write1(ssl,msg.c_str(),msg.size());
+  
+}
+            else if (cmd_name == "10") 
             {
                 size_t first_space = args.find(' ');
                 if (first_space == string::npos)
                  {
-                    cout << "Usage: /msg <target> <message>" << endl;
+                    cout << "Usage: /10 <target> <message>" << endl;
                     continue;
                 }
                 string target = args.substr(0, first_space);
@@ -948,39 +1004,39 @@ int main(int argc, char* argv[])
                  string msg= "私聊 " + target + " " + content + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "creategroup") 
+            else if (cmd_name == "16") 
             {
                 if (args.empty()) {
-                    cout << "Usage: /creategroup <group_name>" << endl;
+                    cout << "Usage: /16 <group_name>" << endl;
                     continue;
                 }
                 string msg = "创建群聊 " + args + "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "joingroup")
+            else if (cmd_name == "13")
              {
                 if (args.empty()) {
-                    cout << "Usage: /joingroup <group_name>" << endl;
+                    cout << "Usage: /13 <group_name>" << endl;
                     continue;
                 }
                 string msg = "加入群聊 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="list_group")
+            else if(cmd_name=="19")
             {
                 if (args.empty()) {
-                    cout << "Usage: /list_group <group_name>" << endl;
+                    cout << "Usage: /19 <group_name>" << endl;
                     continue;
                 }
                 string msg = "查看群聊申请列表 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="approve")
+            else if(cmd_name=="20")
             {
                 size_t first_space = args.find(' ');
                 if (first_space == string::npos)
                  {
-                    cout << "Usage: /approve <group> <name>" << endl;
+                    cout << "Usage: /20 <group> <name>" << endl;
                     continue;
                 }
                 string target = args.substr(0, first_space);
@@ -994,12 +1050,12 @@ int main(int argc, char* argv[])
                 string msg = "同意加入群聊 " + target + " " + content + "\n";
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd=="rejectgroup")
+            else if(cmd=="21")
             {
                  size_t first_space = args.find(' ');
                 if (first_space == string::npos)
                  {
-                    cout << "Usage: /rejectgroup <group> <name>" << endl;
+                    cout << "Usage: /21 <group> <name>" << endl;
                     continue;
                 }
                 string target = args.substr(0, first_space);
@@ -1013,11 +1069,11 @@ int main(int argc, char* argv[])
                 string msg = "拒绝加入群聊 " + target + " " + content + "\n";
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "groupchat") 
+            else if (cmd_name == "15") 
             {
                 size_t first_space = args.find(' ');
                 if (first_space == string::npos) {
-                    cout << "Usage: /groupchat <group_name> <message>" << endl;
+                    cout << "Usage: /15 <group_name> <message>" << endl;
                     continue;
                 }
                 string group = args.substr(0, first_space);
@@ -1031,20 +1087,20 @@ int main(int argc, char* argv[])
                 string msg = "群聊 " + group + " " + content + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "groupmembers") 
+            else if (cmd_name == "17") 
             {
                 if (args.empty()) {
-                    cout << "Usage: /groupmembers <group_name>" << endl;
+                    cout << "Usage: /17 <group_name>" << endl;
                     continue;
                 }
                 string msg = "查看群成员 " + args + "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="del_groupmember")
+            else if(cmd_name=="22")
             {
                  size_t first_space = args.find(' ');
                 if (first_space == string::npos) {
-                    cout << "Usage: /del_groupmember <group_name> <message>" << endl;
+                    cout << "Usage: /22 <group_name> <message>" << endl;
                     continue;
                 }
                 string group = args.substr(0, first_space);
@@ -1058,12 +1114,12 @@ int main(int argc, char* argv[])
                 string msg = "移除成员 " + group + " " + content + "\n";
              SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "mygroups") 
+            else if (cmd_name == "18") 
             {
                 string msg = "查看群聊列表\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name =="leavegroup")
+            else if(cmd_name =="14")
             {
                 if(args.empty())
                 {
@@ -1073,7 +1129,7 @@ int main(int argc, char* argv[])
                 string msg="退出群聊 "+args+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name =="dismissgroup")
+            else if(cmd_name =="25")
             {
                 if(args.empty())
                 {
@@ -1083,7 +1139,7 @@ int main(int argc, char* argv[])
                 string msg="解散群聊 "+args+'\n';
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="setadmin")
+            else if(cmd_name=="23")
             {
                 if(args.empty())
                 {
@@ -1101,7 +1157,7 @@ int main(int argc, char* argv[])
                 string msg="设置管理员 "+qun+" "+name+'\n';
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="deladmin")
+            else if(cmd_name=="24")
             {
                 if(args.empty())
                 {
@@ -1119,7 +1175,7 @@ int main(int argc, char* argv[])
                 string msg="删除管理员 "+qun+" "+name+'\n';
               SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if(cmd_name=="history")
+            else if(cmd_name=="28")
             {
                  if(args.empty())
                 {
@@ -1130,10 +1186,10 @@ int main(int argc, char* argv[])
                 
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            else if (cmd_name == "sendfile") 
+            else if (cmd_name == "26") 
             {
               if (args.empty()) {
-                 cout << "用法: /sendfile <目标> <文件路径>\n";
+                 cout << "用法: /26 <目标> <文件路径>\n";
                   continue;
     }
     size_t space_pos = args.find(' ');
@@ -1186,9 +1242,9 @@ cerr << dec << endl;
 
     cout << "文件上传请求已发送，等待服务端响应...\n";
 }
-            else if (cmd_name == "resendfile") {
+            else if (cmd_name == "30") {
                  if (args.empty()) {
-        cerr << "用法: /resendfile <文件路径>\n";
+        cerr << "用法: /30 <文件路径>\n";
         continue;
                      }
     string filepath = args;  
@@ -1206,7 +1262,7 @@ cerr << dec << endl;
     SSL_write1(ssl, cmd.c_str(), cmd.size());
     cout << "续传请求已发送，等待服务端响应...\n";
 }
-            else if(cmd_name=="download")
+            else if(cmd_name=="27")
             {
                  
               if (args.empty()) {
@@ -1230,6 +1286,7 @@ cerr << dec << endl;
      thread download_thread(start_download, file_id, filepath);
     download_thread.detach();
    }
+
             
             else {
                 cout << "Unknown command. Available: /reg, /login, /add, /del, /list, /msg, /creategroup, /joingroup, /groupchat, /groupmembers, /mygroups, /quit" << endl;
