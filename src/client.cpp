@@ -33,6 +33,40 @@ SSL*ssl;
 mutex ssl_mtu;
 mutex state_mtu;
 size_t wrong=0;
+void send_menu()
+{
+     cerr<< "=============================================\n"
+     << "/5;//添加好友        "<<
+    "/6;//列出好友列表\n"<<
+    "/7;//同意好友申请      "<<
+    "/8;//拒绝好友申请\n"<<
+    "/9;//列出好友       "<<
+    "/10;//私聊\n"<<
+    "/11;//屏蔽好友       "<<
+    "/12;//解除屏蔽\n"<<
+    "/13;//申请加入群聊;      "<<
+    "/14;//推出群聊;\n"<<
+    "/15;//群聊;      "<<
+    "/16;//建群;\n"<<
+    "/17;//查看群聊成员;              "<<
+    "/18;//查看自己的群聊;\n"<<
+    "/19;//查看群聊申请（群主和管理员）       "<<
+    "/20;//同意加群申请（群主和管理员）\n"<<
+    "/21;//拒绝加群申请（群主和管理员）       "<<
+    "/22;//删除群成员（群主和管理员）\n"<<
+    "/23;//设置管理员（群主）      "<<
+    "/24;//删除管理员（群主）\n"<<
+    "/25;//解散群聊（群主）         "<<
+    "/26;//发送文件（可同时实现私聊和群发）\n"<<
+    "/27;//下载文件          "<<
+    "/28;//查看历史记录\n"<<
+    "/29;//删除好友          "<<
+    "/30;//手动续传\n"<<
+    "/32;//读取未读消息           "<<
+    "/36;//退出登录\n"<<
+    "/37;//列出命令目录(登录后)\n"<<
+     "====================请输入你的命令===================\n";
+}
 string SHA256(const string& input)
  {
     unsigned char digest[EVP_MAX_MD_SIZE];
@@ -603,7 +637,7 @@ void recv_thread_func() {
                     leftover.substr(0, pos);
 
                 leftover.erase(0, pos + 1);
-
+              
                 if (!line.empty() && line.back() == '\r') {
                     line.pop_back();
                 }
@@ -623,34 +657,26 @@ void recv_thread_func() {
                     }
 
                     std::cout << "登录成功\n";
-                    cerr<< "/5;//添加好友\n"<<
-    "/6;//列出好友列表\n"<<
-    "/7;//同意好友申请\n"<<
-    "/8;//拒绝好友申请\n"<<
-    "/9;//列出好友\n"<<
-    "/10;//私聊\n"<<
-    "/11;//屏蔽好友\n"<<
-    "/12;//解除屏蔽\n"<<
-    "/13;//申请加入群聊;\n"<<
-    "/14;//推出群聊;\n"<<
-    "/15;//群聊；\n"<<
-    "/16;//建群;\n"<<
-    "/17;//查看群聊成员;\n"<<
-    "/18;//查看自己的群聊;\n"<<
-    "/19;//查看群聊申请（群主和管理员）\n"<<
-    "/20;//同意加群申请（群主和管理员）\n"<<
-    "/21;//拒绝加群申请（群主和管理员）\n"<<
-    "/22;//删除群成员（群主和管理员）\n"<<
-    "/23;//设置管理员（群主）\n"<<
-    "/24;//删除管理员（群主）\n"<<
-    "/25;//解散群聊（群主）\n"<<
-    "/26;//发送文件（可同时实现私聊和群发）\n"<<
-    "/27;//下载文件\n"<<
-    "/28;//查看历史记录\n"<<
-    "/29;//删除好友\n"<<
-    "/30;//手动续传\n"<<
-    "/32;//读取未读消息\n";
+                    send_menu();
+                 
                 }
+                else if (line == "退出登录成功") {
+    lock_guard<mutex> lock(state_mtu);
+    logged_in = false;
+    username.clear();
+    cout << "已退出登录，您可以重新登录其他账号" << endl;
+       cerr<<"目录\n"<<
+    "/1;发送验证码\n"<<
+    "/2;验证码注册\n"<<
+    "/3;验证码登录\n"<<
+    "/31;密码登录\n"<<
+    "/35;普通注册\n"
+    "/4;//忘记密码\n"<<
+    "/33;//退出\n"
+    "/34;//注销\n"<<
+    "====================请输入你的命令===================\n";
+  
+}
                 else if (line.rfind("UPLOAD_READY", 0) == 0) {
 
                     cerr << "DEBUG: Received UPLOAD_READY line: ["
@@ -791,7 +817,7 @@ bool get_args(string&u)
 int main(int argc, char* argv[]) 
 {
     cerr << "======= CLIENT VERSION WITH /list DEBUG ========" << endl;
-    cerr<<"目录\n"<<
+     cerr<<"目录\n"<<
     "/1;发送验证码\n"<<
     "/2;验证码注册\n"<<
     "/3;验证码登录\n"<<
@@ -876,15 +902,20 @@ int main(int argc, char* argv[])
             size_t space_pos = cmd.find(' ');
             string cmd_name = (space_pos == string::npos) ? cmd : cmd.substr(0, space_pos);
             string args = (space_pos == string::npos) ? "" : cmd.substr(space_pos + 1);
+            if(cmd_name=="37")
+            {
+                send_menu();
+            }
             if(!logged_in)
-         {  if (cmd_name== "33") 
+         {  
+            if (cmd_name== "33") 
         {
             wrong=0;
             string msg = "退出\n";
             SSL_write1(ssl, msg.c_str(), msg.size());
             cerr<<"退出程序"<<endl;
             close(sockfd);
-            return 0;
+           return 0;
         }
             else if (cmd_name == "2") 
             {
@@ -949,7 +980,7 @@ int main(int argc, char* argv[])
                 string password=SHA256(SALT+p);
                 string msg = "验证码注册 " + u + " "+p+" "+w+" "+r+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
-                
+                send_menu();
             }
             else if(cmd_name=="1")
             {
@@ -1116,6 +1147,11 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
+               if(w.find("@163.com")==string::npos)
+               {
+                cout<<"请使用@163.com邮箱，注册失败\n";
+                continue;
+               }
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "普通注册 " + u + " " + pwd_md5 + " "+w+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
@@ -1129,7 +1165,7 @@ int main(int argc, char* argv[])
         }
             else 
             {
-
+               
             if (cmd_name == "5") 
             {
                  wrong=0;
@@ -1153,7 +1189,6 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
-              
                 string msg = "屏蔽 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1566,6 +1601,13 @@ if(!get_args(filepath))
      thread download_thread(start_download, file_id, filepath);
     download_thread.detach();
     } 
+            else if (cmd_name== "36") 
+        {
+            wrong=0;
+            string msg = "退出登录\n";
+            SSL_write1(ssl, msg.c_str(), msg.size());
+            cerr<<"退出登录"<<endl;
+        }
             else {
                 wrong++;
                 cout << "Unknown command" << endl;

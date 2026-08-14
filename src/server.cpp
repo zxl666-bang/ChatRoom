@@ -99,13 +99,12 @@ void close_connection(int fd) {
     if (clients.find(fd) == clients.end()) return;
     Client& c = clients[fd];
     if (c.logged_in && !c.username.empty()) {
+        redisCommand(redis_conn, "DEL %s",("online:"+clients[fd].username).c_str());
         name_to_fd.erase(c.username);
     }
 
-    // 2. 从 epoll 移除
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
 
-    // 3. 文件传输清理
     if (file_client_fds.find(fd) != file_client_fds.end()) {
         file_client_fds.erase(fd);
         on_file_connection(fd, false);
@@ -875,46 +874,7 @@ bool is_email1(const string&name,const string&email)
     }
    return (it[0][0]==email);
 }
-bool login1(int fd,const string&name,const string&email,const string&code)
-{
-    if(!user_exists1(name))
-    {
-        send_message(fd,"用户不存在\n");
-        return false;
-    }
-    if(!verify_captcha(fd,email,code))
 
-    {
-        send_message(fd,"验证码错误\n");
-        return false;
-    }
-    return true;
-}
-
-bool login2(int fd,const string&name,const string&password)
-{
-     if(!user_exists1(name))
-    {
-        send_message(fd,"用户不存在\n");
-        return false;
-    }
-   string sql="SELECT password_hash, email FROM users WHERE username= ? ";
-    vector<vector<string>>res=excute_select(sql,{name});
-    if(res.empty())
-    {
-        return false;
-    }
-    
-        if(res[0][0]==password)
-        {
-             clients[fd].logged_in = true;
-              clients[fd].username = name;
-             name_to_fd[name] = fd;
-            return true;
-        }
-        send_message(fd,"密码错误\n");
-        return false;
-}
 
 void findpassword1(int fd,const string&name,const string&email,const string&code,const string&password)
 {
@@ -1020,6 +980,56 @@ bool is_online(const string& username)
     return online;
 }
 
+bool login1(int fd,const string&name,const string&email,const string&code)
+{
+    if(!user_exists1(name))
+    {
+        send_message(fd,"用户不存在\n");
+        return false;
+    }
+    if(is_online(name))
+    {
+        send_message(fd,"不可重复登录\n");
+        return false;
+    }
+    if(!verify_captcha(fd,email,code))
+
+    {
+        send_message(fd,"验证码错误\n");
+        return false;
+    }
+    return true;
+}
+
+bool login2(int fd,const string&name,const string&password)
+{
+     if(!user_exists1(name))
+    {
+        send_message(fd,"用户不存在\n");
+        return false;
+    }
+    if(is_online(name))
+    {
+        send_message(fd,"不可重复登录\n");
+        return false;
+    }
+   string sql="SELECT password_hash, email FROM users WHERE username= ? ";
+    vector<vector<string>>res=excute_select(sql,{name});
+    if(res.empty())
+    {
+        return false;
+    }
+    
+        if(res[0][0]==password)
+        {
+             clients[fd].logged_in = true;
+              clients[fd].username = name;
+             name_to_fd[name] = fd;
+            return true;
+        }
+        send_message(fd,"密码错误\n");
+        return false;
+}
 void refresh_online(const string& username) {
     if (!username.empty())
      {
@@ -2687,6 +2697,29 @@ void jiesan(int ufd,const string&qun)
     return;
 }
 
+void tuichu(int fd)
+{
+    Client& c = clients[fd];
+    if (!c.logged_in) {
+        send_message(fd, "您尚未登录\n");
+        return;
+    }
+    string username = c.username;
+
+    
+    redisCommand(redis_conn, "DEL %s", ("online:" + username).c_str());
+
+    
+    name_to_fd.erase(username);
+
+   
+    c.logged_in = false;
+    c.username.clear();
+    c.send_buffer.clear();
+    c.send_offset = 0;
+    c.recv_buffer.clear();
+    send_message(fd, "退出登录成功\n");
+}
 
 void handle_command(int fd, const string& line)
  {
@@ -2702,6 +2735,10 @@ void handle_command(int fd, const string& line)
         string email;
         iss>>email;
         GET_CAPTCHA(fd,email);
+    }
+    else if(cmd=="退出登录")
+    {
+        tuichu(fd);
     }
     else if(cmd=="普通注册")
     {
@@ -3259,6 +3296,8 @@ void cleancurl()
     curl_global_cleanup();
     return;
 }
+
+
 int main() 
 {
     signal(SIGPIPE, SIG_IGN);
