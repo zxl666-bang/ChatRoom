@@ -767,8 +767,13 @@ void zhuxiao(int fd, const string& name, const string& password) {
 
     string sql_del = "DELETE FROM users WHERE username = ?";
     int64_t rows = excute_updata(sql_del, {name}); 
+    int ufd=-1;
+    ufd=name_to_fd[name];
     if (rows == 1) {
         send_message(fd, "注销成功，账户已删除\n");
+        if(ufd!=-1)
+        {send_message(ufd,"该用户已被注销\n");
+        close_connection(ufd);}
         close_connection(fd);
     } else {
         send_message(fd, "注销失败，请稍后重试\n");
@@ -3239,7 +3244,6 @@ void handle_command(int fd, const string& line)
     else if (cmd == "退出")
      {
    string leave_msg = "[系统] " + clients[fd].username + " 离开了。\n";
-   broadcast(fd, leave_msg); 
    close_connection(fd);       
       
     }
@@ -3550,6 +3554,10 @@ if (revents & EPOLLIN) {
                     fd,
                     line
                 );
+                 if (clients.find(fd) != clients.end() && !clients[fd].username.empty()&&line.find("心跳")==string::npos)
+                 {
+                  send_message(fd, "命令完成\n");
+                 }
             }
 
             if (clients.find(fd) ==
@@ -3601,9 +3609,6 @@ if (revents & EPOLLIN) {
     }
 }
 
-// ======================================================
-// 普通连接写事件
-// ======================================================
 
 if (clients.find(fd) == clients.end())
     continue;

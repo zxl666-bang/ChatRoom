@@ -7,6 +7,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include<iomanip>
 #include <netinet/in.h>
 #include<vector>
 #include<endian.h>
@@ -35,38 +36,39 @@ mutex state_mtu;
 size_t wrong=0;
 void send_menu()
 {
-     cerr<< "=============================================\n"
-     << "/5;//添加好友        "<<
-    "/6;//列出好友列表\n"<<
-    "/7;//同意好友申请      "<<
-    "/8;//拒绝好友申请\n"<<
-    "/9;//列出好友       "<<
-    "/10;//私聊\n"<<
-    "/11;//屏蔽好友       "<<
-    "/12;//解除屏蔽\n"<<
-    "/13;//申请加入群聊;      "<<
-    "/14;//推出群聊;\n"<<
-    "/15;//群聊;      "<<
-    "/16;//建群;\n"<<
-    "/17;//查看群聊成员;              "<<
-    "/18;//查看自己的群聊;\n"<<
-    "/19;//查看群聊申请（群主和管理员）       "<<
-    "/20;//同意加群申请（群主和管理员）\n"<<
-    "/21;//拒绝加群申请（群主和管理员）       "<<
-    "/22;//删除群成员（群主和管理员）\n"<<
-    "/23;//设置管理员（群主）      "<<
-    "/24;//删除管理员（群主）\n"<<
-    "/25;//解散群聊（群主）         "<<
-    "/26;//发送文件（可同时实现私聊和群发）\n"<<
-    "/27;//下载文件          "<<
-    "/28;//查看历史记录\n"<<
-    "/29;//删除好友          "<<
-    "/30;//手动续传\n"<<
-    "/32;//读取未读消息           "<<
-    "/36;//退出登录\n"<<
-    "/37;//列出命令目录(登录后)\n"<<
-     "====================请输入你的命令===================\n";
+    cerr << "=============================================\n";
+    cerr << left << setw(20) << "/5 添加好友"
+         << setw(20) << "/6 列出好友申请" << "\n";
+    cerr << left << setw(20) << "/7 同意好友申请"
+         << setw(20) << "/8 拒绝好友申请" << "\n";
+    cerr << left << setw(20) << "/9 好友列表"
+         << setw(20) << "/10 私聊" << "\n";
+    cerr << left << setw(20) << "/11 屏蔽好友"
+         << setw(20) << "/12 解除屏蔽" << "\n";
+    cerr << left << setw(20) << "/13 申请加入群聊"
+         << setw(20) << "/14 退出群聊" << "\n";
+    cerr << left << setw(20) << "/15 群聊"
+         << setw(20) << "/16 创建群聊" << "\n";
+    cerr << left << setw(20) << "/17 查看群成员"
+         << setw(20) << "/18 查看自己的群聊" << "\n";
+    cerr << left << setw(20) << "/19 查看群申请"
+         << setw(20) << "/20 同意加群申请" << "\n";
+    cerr << left << setw(20) << "/21 拒绝加群申请"
+         << setw(20) << "/22 删除群成员" << "\n";
+    cerr << left << setw(20) << "/23 设置管理员"
+         << setw(20) << "/24 删除管理员" << "\n";
+    cerr << left << setw(20) << "/25 解散群聊"
+         << setw(20) << "/26 发送文件" << "\n";
+    cerr << left << setw(20) << "/27 下载文件"
+         << setw(20) << "/28 查看历史记录" << "\n";
+    cerr << left << setw(20) << "/29 删除好友"
+         << setw(20) << "/30 手动续传" << "\n";
+    cerr << left << setw(20) << "/32 读取未读消息"
+         << setw(20) << "/36 退出登录" << "\n";
+    cerr << "/37 列出命令目录(登录后)\n";
+    cerr << "=============================================\n";
 }
+
 string SHA256(const string& input)
  {
     unsigned char digest[EVP_MAX_MD_SIZE];
@@ -657,7 +659,7 @@ void recv_thread_func() {
                     }
 
                     std::cout << "登录成功\n";
-                    send_menu();
+                    
                  
                 }
                 else if (line == "退出登录成功") {
@@ -677,6 +679,23 @@ void recv_thread_func() {
     "====================请输入你的命令===================\n";
   
 }
+                else if(line=="命令完成"&&logged_in==true)
+                {
+                    send_menu();
+                }
+                else if(line=="命令完成"&&!logged_in)
+                {
+                    cerr<<"目录\n"<<
+    "/1;发送验证码\n"<<
+    "/2;验证码注册\n"<<
+    "/3;验证码登录\n"<<
+    "/31;密码登录\n"<<
+    "/35;普通注册\n"
+    "/4;//忘记密码\n"<<
+    "/33;//退出\n"
+    "/34;//注销\n"<<
+    "====================请输入你的命令===================\n";
+                }
                 else if (line.rfind("UPLOAD_READY", 0) == 0) {
 
                     cerr << "DEBUG: Received UPLOAD_READY line: ["
@@ -1176,7 +1195,7 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
-                string msg = "添加好友 " + args + "\n";
+                string msg = "添加好友 " + u + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="11")
@@ -1189,7 +1208,7 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
-                string msg = "屏蔽 " + args + "\n";
+                string msg = "屏蔽 " + u + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="12")
@@ -1203,7 +1222,7 @@ int main(int argc, char* argv[])
                 return 0;
                }
                 
-                string msg = "解除屏蔽 " + args + "\n";
+                string msg = "解除屏蔽 " + u + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name=="6")
@@ -1222,7 +1241,7 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
-                string msg = "同意添加好友 " + args + "\n";
+                string msg = "同意添加好友 " + u + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="8")
@@ -1235,7 +1254,7 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
-                string msg = "拒绝添加好友 " + args + "\n";
+                string msg = "拒绝添加好友 " +u + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             
@@ -1249,7 +1268,7 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
-                string msg = "删除好友 " + args + "\n";
+                string msg = "删除好友 " +u + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "9") {
@@ -1269,7 +1288,7 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
-    string msg="读取未读消息 "+args+'\n';
+    string msg="读取未读消息 "+u+'\n';
     SSL_write1(ssl,msg.c_str(),msg.size());
   
 }
@@ -1284,11 +1303,11 @@ int main(int argc, char* argv[])
                 return 0;
                }
                cout<<"content:\n";
+                getline(cin,content);
                if(!get_args(content))
                {
                 return 0;
                }
-               getline(cin,content);
                  string msg= "私聊 " + target + " " + content + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
