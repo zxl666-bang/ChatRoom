@@ -848,19 +848,24 @@ int main(int argc, char* argv[])
             cout<<"输入错误命令过多，退出程序"<<endl;
             string msg="退出\n";
             SSL_write1(ssl,msg.c_str(),msg.size());
+            close(sockfd);
+            return 0;
         }
-        if (line[0] == '/') 
+         if (line[0] == '/') 
         {
             string cmd = line.substr(1);
             size_t space_pos = cmd.find(' ');
             string cmd_name = (space_pos == string::npos) ? cmd : cmd.substr(0, space_pos);
             string args = (space_pos == string::npos) ? "" : cmd.substr(space_pos + 1);
-            if (cmd_name== "33") 
+            if(!logged_in)
+         {  if (cmd_name== "33") 
         {
             wrong=0;
             string msg = "退出\n";
             SSL_write1(ssl, msg.c_str(), msg.size());
-            break;
+            cerr<<"退出程序"<<endl;
+            close(sockfd);
+            return 0;
         }
             else if (cmd_name == "2") 
             {
@@ -901,7 +906,7 @@ int main(int argc, char* argv[])
                  wrong=0;
                  if (args.empty()) 
                 {
-                    cout <<"code不能为空"<< endl;
+                    cout <<"email不能为空"<< endl;
                     continue;
                 }
                 string msg = "发送验证码 " + args + "\n";
@@ -958,11 +963,13 @@ int main(int argc, char* argv[])
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "注销 " + u + " " + pwd_md5+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
+                cerr<<"注销成功,退出程序\n";
+                return 0;
             }
             else if (cmd_name == "31") 
             {
                  wrong=0;
-                string u, p,w,r;
+                string u, p;
                 cout<<"请输入名字\n";
                 getline(cin,u);
                 cout<<"请输入密码\n";
@@ -1002,9 +1009,7 @@ int main(int argc, char* argv[])
                 string msg = "忘记密码 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
-            if(logged_in)
-            {
-            if(cmd_name=="35")
+            else if(cmd_name=="35")
             {
                  wrong=0;
                 string u, p,w;
@@ -1030,8 +1035,18 @@ int main(int argc, char* argv[])
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "普通注册 " + u + " " + pwd_md5 + " "+w+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
-            }
-            else if (cmd_name == "5") 
+            } 
+            else
+           {
+            wrong++;
+            cout<<"unknow command\n";
+            continue;
+           }
+        }
+            else 
+            {
+
+            if (cmd_name == "5") 
             {
                  wrong=0;
                 if (args.empty()) 
@@ -1459,24 +1474,13 @@ cerr << dec << endl;
                 cout << "Unknown command" << endl;
             }
         }
-            else
-        {
-            cout<<"先登录\n";
-        }
+         
     }
-        else
+         else
         {
              cout << "Unknown command" << endl;
               wrong++;
-              bool is_logged_in;
-        {
-            lock_guard<mutex> lock(state_mtu);
-            is_logged_in = logged_in;
-        }
-            if (!is_logged_in) 
-            {
-                cout << "请先登录" << endl;
-            }
+            
         }
     }
     close(sockfd);
