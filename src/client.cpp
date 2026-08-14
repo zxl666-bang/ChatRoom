@@ -769,6 +769,25 @@ void recv_thread_func() {
         break;
     }
 }
+bool get_args(string&u)
+{
+    int n=0;
+     while(u.empty())
+     {
+                    cout<<"输入不能为空\n";
+                    getline(cin,u);
+                    n++;
+                    if(n==5)
+                    {
+                        cout<<"输入过多错误命令，程序退出\n";
+                        close(sockfd);
+                        return false;
+                        
+                    }
+                }
+      return true;
+}
+
 int main(int argc, char* argv[]) 
 {
     cerr << "======= CLIENT VERSION WITH /list DEBUG ========" << endl;
@@ -873,13 +892,60 @@ int main(int argc, char* argv[])
                  string u,w,r,p;
                 cout<<"命令：验证码注册,name:\n";
                 getline(cin,u);
+                int n=0;
+                while(u.empty())
+                {
+                    cout<<"输入不能为空\n";
+                    getline(cin,u);
+                    n++;
+                    if(n==5)
+                    {
+                        cout<<"输入过多错误命令，程序退出\n";
+                        close(sockfd);
+                        return 0;
+                    }
+                }
+                n=0;
                 cout<<"password:\n";
-                getline(cin,p);
+                p=get_password();
+                while(p.empty())
+                {
+                    n++;
+                    p=get_password();
+                    if(n==5)
+                    {
+                        cout<<"输入错误命令过多，退出程序\n";
+                        return 0;
+                    }
+                }
+                n=0;
                 cout<<"email:\n";
                 getline(cin,w);
-                stringstream ss(args);
+                 while(w.empty())
+                {
+                    cout<<"输入不能为空\n";
+                    getline(cin,w);
+                    n++;
+                    if(n==5)
+                    {
+                        cout<<"输入过多错误命令，程序退出\n";
+                        close(sockfd);
+                        return 0;
+                        
+                    }
+                }
+                if(w.find("@163.com")==string::npos)
+                {
+                    cout<<"请用@163.com邮箱,注册失败\n";
+                    continue;
+                }
+                n=0;
                 cout<<"code:\n";
                 getline(cin,r);
+                if(!get_args(r))
+               {
+                return 0;
+               }
                 string password=SHA256(SALT+p);
                 string msg = "验证码注册 " + u + " "+p+" "+w+" "+r+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
@@ -891,6 +957,10 @@ int main(int argc, char* argv[])
                string u;
                cout<<"发送验证码，email:\n";
                getline(cin,u);
+               if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg = "发送验证码 " + u + "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -900,10 +970,23 @@ int main(int argc, char* argv[])
                 string u, p,w,r;
                 cout<<"验证码登录,name:\n";
                 getline(cin,u);
+                
+               if(!get_args(u))
+               {
+                return 0;
+               }
                 cout<<"email:\n";
                 getline(cin,w);
+                if(!get_args(w))
+               {
+                return 0;
+               }
                 cout<<"code:\n";
                 getline(cin,r);
+                if(!get_args(r))
+               {
+                return 0;
+               }
                 string msg = "验证码登录 " + u  + " "+w+" "+r+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -913,13 +996,27 @@ int main(int argc, char* argv[])
                 string u, p;
                cout<<"注销,name:\n";
                getline(cin,u);
+               if(!get_args(u))
+               {
+                return 0;
+               }
                cout<<"password:\n";
-               getline(cin,p);
+              p=get_password();
+                int n=0;
+                while(p.empty())
+                {
+                    n++;
+                    p=get_password();
+                    if(n==5)
+                    {
+                        cout<<"输入错误命令过多，退出程序\n";
+                        return 0;
+                    }
+                }
+                n=0;
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "注销 " + u + " " + pwd_md5+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
-                cerr<<"注销成功,退出程序\n";
-                return 0;
             }
             else if (cmd_name == "31") 
             {
@@ -927,8 +1024,24 @@ int main(int argc, char* argv[])
                 string u, p;
                 cout<<"密码登录,name:\n";
                 getline(cin,u);
+                if(!get_args(u))
+               {
+                return 0;
+               }
                 cout<<"password:\n";
                 p=get_password();
+                int n=0;
+                while(p.empty())
+                {
+                    n++;
+                    p=get_password();
+                    if(n==5)
+                    {
+                        cout<<"输入错误命令过多，退出程序\n";
+                        return 0;
+                    }
+                }
+                n=0;
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "密码登录 " + u + " " + pwd_md5+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
@@ -939,12 +1052,36 @@ int main(int argc, char* argv[])
                 string u, p,w,r;
                 cout<<"忘记密码，name:\n";
                 getline(cin,u);
+                if(!get_args(u))
+               {
+                return 0;
+               }
                 cout<<"password:\n";
-                getline(cin,p);
+                 p=get_password();
+                int n=0;
+                while(p.empty())
+                {
+                    n++;
+                    p=get_password();
+                    if(n==5)
+                    {
+                        cout<<"输入错误命令过多，退出程序\n";
+                        return 0;
+                    }
+                }
+                n=0;
                 cout<<"email:\n";
                 getline(cin,w);
+                if(!get_args(w))
+               {
+                return 0;
+               }
                 cout<<"code:\n";
                 getline(cin,r);
+                if(!get_args(r))
+               {
+                return 0;
+               }
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "忘记密码 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
@@ -955,10 +1092,30 @@ int main(int argc, char* argv[])
                 string u, p,w;
                cout<<"普通注册，name:\n";
                getline(cin,u);
+               if(!get_args(u))
+               {
+                return 0;
+               }
                cout<<"password:\n";
-               getline(cin,p);
+                p=get_password();
+                int n=0;
+                while(p.empty())
+                {
+                    n++;
+                    p=get_password();
+                    if(n==5)
+                    {
+                        cout<<"输入错误命令过多，退出程序\n";
+                        return 0;
+                    }
+                }
+                n=0;
                cout<<"email:\n";
                getline(cin,w);
+               if(!get_args(w))
+               {
+                return 0;
+               }
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "普通注册 " + u + " " + pwd_md5 + " "+w+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
@@ -979,6 +1136,10 @@ int main(int argc, char* argv[])
                string u;
                cout<<"添加好友,name:\n";
                getline(cin,u);
+               if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg = "添加好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -988,6 +1149,10 @@ int main(int argc, char* argv[])
                 string u;
                cout<<"屏蔽好友,name:\n";
                getline(cin,u);
+               if(!get_args(u))
+               {
+                return 0;
+               }
               
                 string msg = "屏蔽 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
@@ -998,6 +1163,10 @@ int main(int argc, char* argv[])
                 string u;
                cout<<"解除屏蔽好友,name:\n";
                getline(cin,u);
+               if(!get_args(u))
+               {
+                return 0;
+               }
                 
                 string msg = "解除屏蔽 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
@@ -1014,7 +1183,10 @@ int main(int argc, char* argv[])
                string u;
                cout<<"同意添加好友,name:\n";
                getline(cin,u);
-                
+                if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg = "同意添加好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1024,7 +1196,10 @@ int main(int argc, char* argv[])
                string u;
                cout<<"拒绝添加好友,name:\n";
                getline(cin,u);
-               
+               if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg = "拒绝添加好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1035,7 +1210,10 @@ int main(int argc, char* argv[])
               string u;
                cout<<"删除好友,name:\n";
                getline(cin,u);
-               
+               if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg = "删除好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1052,7 +1230,10 @@ int main(int argc, char* argv[])
   string u;
                cout<<"读取未读消息，name:\n";
                getline(cin,u);
-             
+             if(!get_args(u))
+               {
+                return 0;
+               }
     string msg="读取未读消息 "+args+'\n';
     SSL_write1(ssl,msg.c_str(),msg.size());
   
@@ -1063,7 +1244,15 @@ int main(int argc, char* argv[])
                string target,content;
                cout<<"私聊，name:\n";
                getline(cin,target);
+               if(!get_args(target))
+               {
+                return 0;
+               }
                cout<<"content:\n";
+               if(!get_args(content))
+               {
+                return 0;
+               }
                getline(cin,content);
                  string msg= "私聊 " + target + " " + content + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
@@ -1073,6 +1262,10 @@ int main(int argc, char* argv[])
                 string u;
                 cout<<"传建群聊,groupname:";
                 getline(cin,u);
+                if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg = "创建群聊 " + u + "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1081,6 +1274,10 @@ int main(int argc, char* argv[])
                  string u;
                 cout<<"加入群聊,groupname:";
                 getline(cin,u);
+                if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg = "加入群聊 " + u+ "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1089,6 +1286,10 @@ int main(int argc, char* argv[])
                 string u;
                 cout<<"查看群聊申请,groupname:";
                 getline(cin,u);
+                if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg = "查看群聊申请列表 " + u + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1097,8 +1298,16 @@ int main(int argc, char* argv[])
                string target,content;
                cout<<"同意加入群聊，groupname:\n";
                getline(cin,target);
+               if(!get_args(target))
+               {
+                return 0;
+               }
                cout<<"membername:\n";
                getline(cin,content);
+               if(!get_args(content))
+               {
+                return 0;
+               }
                 string msg = "同意加入群聊 " + target + " " + content + "\n";
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1108,8 +1317,16 @@ int main(int argc, char* argv[])
                  string target,content;
                cout<<"拒绝加入群聊，groupname:\n";
                getline(cin,target);
+               if(!get_args(target))
+               {
+                return 0;
+               }
                cout<<"membername:\n";
                getline(cin,content);
+               if(!get_args(content))
+               {
+                return 0;
+               }
                 string msg = "拒绝加入群聊 " + target + " " + content + "\n";
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1118,8 +1335,16 @@ int main(int argc, char* argv[])
                  string target,content;
                cout<<"群聊，groupname:\n";
                getline(cin,target);
+               if(!get_args(target))
+               {
+                return 0;
+               }
                cout<<"content:\n";
                getline(cin,content);
+               if(!get_args(content))
+               {
+                return 0;
+               }
                 string msg = "群聊 " + target + " " + content + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1128,6 +1353,10 @@ int main(int argc, char* argv[])
                 string u;
                cout<<"查看群聊成员,groupname:\n";
                getline(cin,u);
+               if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg = "查看群成员 " +u + "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1136,8 +1365,16 @@ int main(int argc, char* argv[])
                string group,content;
                cout<<"移除成员，groupname:\n";
                getline(cin,group);
+               if(!get_args(group))
+               {
+                return 0;
+               }
                cout<<"membername:\n";
                getline(cin,content);
+               if(!get_args(content))
+               {
+                return 0;
+               }
                 string msg = "移除成员 " + group + " " + content + "\n";
              SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1151,6 +1388,10 @@ int main(int argc, char* argv[])
                 string u;
                 cout<<"退出群聊，groupname\n";
                 getline(cin,u);
+                if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg="退出群聊 "+u+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1159,6 +1400,10 @@ int main(int argc, char* argv[])
                  string u;
                 cout<<"解散群聊，groupname\n";
                 getline(cin,u);
+                if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg="解散群聊 "+u+'\n';
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1167,8 +1412,16 @@ int main(int argc, char* argv[])
                string u,m;
                cout<<"设置管理员,groupname:\n";
                getline(cin,u);
+               if(!get_args(u))
+               {
+                return 0;
+               }
                cout<<"name:\n";
                getline(cin,m);
+               if(!get_args(m))
+               {
+                return 0;
+               }
                 string msg="设置管理员 "+u+" "+m+'\n';
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1178,8 +1431,16 @@ int main(int argc, char* argv[])
                 string u,m;
                cout<<"删除管理员,groupname:\n";
                getline(cin,u);
+               if(!get_args(u))
+               {
+                return 0;
+               }
                cout<<"name:\n";
                getline(cin,m);
+               if(!get_args(m))
+               {
+                return 0;
+               }
                 string msg="删除管理员 "+u+" "+m+'\n';
               SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1188,6 +1449,10 @@ int main(int argc, char* argv[])
               string u;
               cout<<"查看聊天记录,name:\n";
               getline(cin,u);
+              if(!get_args(u))
+               {
+                return 0;
+               }
                 string msg="查看聊天记录 "+u+"\n";
                 
                  SSL_write1(ssl, msg.c_str(), msg.size());
@@ -1198,9 +1463,16 @@ int main(int argc, char* argv[])
     string target ,filepath;
     cout<<"上传文件,targetname:\n";
     getline(cin,target);
+    if(!get_args(target))
+               {
+                return 0;
+               }
     cout<<"filepath\n";
     getline(cin,filepath); 
-
+if(!get_args(filepath))
+               {
+                return 0;
+               }
     // 去除前导空格和尾部空格
    size_t start = filepath.find_first_not_of(" \t\r\n");
     if (start == string::npos) {
@@ -1250,7 +1522,10 @@ cerr << dec << endl;
     string filepath;
     cout<<"续传，filepath:\n";
     getline(cin,filepath);
-
+if(!get_args(filepath))
+               {
+                return 0;
+               }
     ifstream file(filepath, ios::binary | ios::ate);
     if (!file.is_open()) {
         cout << "无法打开文件，请检查路径和权限\n";
@@ -1271,8 +1546,16 @@ cerr << dec << endl;
     string file_id,filepath;
     cout<<"下载文件,file_id:\n";
     getline(cin,file_id);
+    if(!get_args(file_id))
+               {
+                return 0;
+               }
     cout<<"filepath:\n";
     getline(cin,filepath);
+    if(!get_args(filepath))
+               {
+                return 0;
+               }
     if (filepath.empty()) 
     {
            cout<<"filepath不能为空\n";
