@@ -870,32 +870,16 @@ int main(int argc, char* argv[])
             else if (cmd_name == "2") 
             {
                 wrong=0;
-                string u,w,r,p;
+                 string u,w,r,p;
+                cout<<"命令：验证码注册,name:\n";
+                getline(cin,u);
+                cout<<"password:\n";
+                getline(cin,p);
+                cout<<"email:\n";
+                getline(cin,w);
                 stringstream ss(args);
-                ss >> u>>p>>w>>r;
-                if (u.empty() ||w.empty()||r.empty()||p.empty())
-                 {
-                    if(u.empty())
-                    {
-                        cout<<"name不能为空\n";
-                        continue;
-                    }
-                    else if(p.empty())
-                    {
-                        cout<<"password不能为空\n";
-                        continue;
-                    }
-                    else if(w.empty())
-                    {
-                        cout<<"email不能为空\n";
-                        continue;
-                    }
-                    else if(r.empty())
-                    {
-                        cout<<"code不能为空\n";
-                        continue;
-                    }
-                }
+                cout<<"code:\n";
+                getline(cin,r);
                 string password=SHA256(SALT+p);
                 string msg = "验证码注册 " + u + " "+p+" "+w+" "+r+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
@@ -904,40 +888,22 @@ int main(int argc, char* argv[])
             else if(cmd_name=="1")
             {
                  wrong=0;
-                 if (args.empty()) 
-                {
-                    cout <<"email不能为空"<< endl;
-                    continue;
-                }
-                string msg = "发送验证码 " + args + "\n";
+               string u;
+               cout<<"发送验证码，email:\n";
+               getline(cin,u);
+                string msg = "发送验证码 " + u + "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "3") 
             {
                  wrong=0;
                 string u, p,w,r;
-                stringstream ss(args);
-                ss >> u >> p>>w;
-                if (u.empty() || p.empty()||w.empty())
-                 {
-                    if(u.empty())
-                   {
-                    cout<<"name不能为空\n";
-                   
-                   }
-                    else if(p.empty())
-                   {
-                    cout<<"email不能为空\n";
-                    
-                   }
-                    else if(w.empty())
-                    {
-                        cout<<"code不能为空\n";
-                    }
-                    cout << "Usage: /3 <username> <email> <code>" << endl;
-                    continue;
-                }
-            
+                cout<<"验证码登录,name:\n";
+                getline(cin,u);
+                cout<<"email:\n";
+                getline(cin,w);
+                cout<<"code:\n";
+                getline(cin,r);
                 string msg = "验证码登录 " + u  + " "+w+" "+r+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -945,21 +911,10 @@ int main(int argc, char* argv[])
             {
                  wrong=0;
                 string u, p;
-                stringstream ss(args);
-                ss >> u >> p;
-                if (u.empty() || p.empty())
-                 {
-                    if(u.empty())
-                    {
-                        cout<<"name不能为空\n";
-                    }
-                    else
-                    {
-                        cout<<"password不能为空\n";
-                    }
-                    cout << "Usage: /34 <username> <password>" << endl;
-                    continue;
-                }
+               cout<<"注销,name:\n";
+               getline(cin,u);
+               cout<<"password:\n";
+               getline(cin,p);
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "注销 " + u + " " + pwd_md5+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
@@ -970,9 +925,9 @@ int main(int argc, char* argv[])
             {
                  wrong=0;
                 string u, p;
-                cout<<"请输入名字\n";
+                cout<<"密码登录,name:\n";
                 getline(cin,u);
-                cout<<"请输入密码\n";
+                cout<<"password:\n";
                 p=get_password();
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "密码登录 " + u + " " + pwd_md5+"\n";
@@ -982,29 +937,14 @@ int main(int argc, char* argv[])
             {
                 wrong=0;
                 string u, p,w,r;
-                stringstream ss(args);
-                ss >> u >> p>>w>>r;
-                if (u.empty() || p.empty()||w.empty()||r.empty())
-                 {
-                    if(u.empty())
-                    {
-                        cout<<"name不能为空\n";
-                    }
-                    else if(p.empty())
-                    {
-                        cout<<"password不能为空\n";
-                    }
-                    else if(w.empty())
-                    {
-                        cout<<"email不能为空\n";
-                    }
-                    else
-                    {
-                        cout<<"code不能为空\n";
-                    }
-                    cout << "Usage: /4 <username> <password> <email> <code>" << endl;
-                    continue;
-                }
+                cout<<"忘记密码，name:\n";
+                getline(cin,u);
+                cout<<"password:\n";
+                getline(cin,p);
+                cout<<"email:\n";
+                getline(cin,w);
+                cout<<"code:\n";
+                getline(cin,r);
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "忘记密码 " + u + " " + pwd_md5 + " "+w+" "+r+"\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
@@ -1013,25 +953,12 @@ int main(int argc, char* argv[])
             {
                  wrong=0;
                 string u, p,w;
-                stringstream ss(args);
-                ss >> u >> p>>w;
-                if (u.empty() || p.empty()||w.empty())
-                 {
-                    if(u.empty())
-                    {
-                        cout<<"name不能为空\n";
-                    }
-                    else if(p.empty())
-                    {
-                        cout<<"password不能为空\n";
-                    }
-                    else
-                    {
-                        cout<<"email不能为空\n";
-                    }
-                    cout << "Usage: /35 <username> <password> <email>" << endl;
-                    continue;
-                }
+               cout<<"普通注册，name:\n";
+               getline(cin,u);
+               cout<<"password:\n";
+               getline(cin,p);
+               cout<<"email:\n";
+               getline(cin,w);
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "普通注册 " + u + " " + pwd_md5 + " "+w+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
@@ -1049,33 +976,29 @@ int main(int argc, char* argv[])
             if (cmd_name == "5") 
             {
                  wrong=0;
-                if (args.empty()) 
-                {
-                    cout << "Usage: /5 <friend_name>" << endl;
-                    continue;
-                }
+               string u;
+               cout<<"添加好友,name:\n";
+               getline(cin,u);
                 string msg = "添加好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="11")
             {
                  wrong=0;
-                 if (args.empty()) 
-                {
-                    cout << "Usage: /11 <friend_name>" << endl;
-                    continue;
-                }
+                string u;
+               cout<<"屏蔽好友,name:\n";
+               getline(cin,u);
+              
                 string msg = "屏蔽 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="12")
             {
                  wrong=0;
-                 if (args.empty()) 
-                {
-                    cout << "Usage: /12 <friend_name>" << endl;
-                    continue;
-                }
+                string u;
+               cout<<"解除屏蔽好友,name:\n";
+               getline(cin,u);
+                
                 string msg = "解除屏蔽 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1088,22 +1011,20 @@ int main(int argc, char* argv[])
             else if(cmd_name=="7")
             {
                  wrong=0;
-               if (args.empty()) 
-                {
-                    cout << "Usage: /7 <name>" << endl;
-                    continue;
-                }
+               string u;
+               cout<<"同意添加好友,name:\n";
+               getline(cin,u);
+                
                 string msg = "同意添加好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="8")
             {
                  wrong=0;
-               if (args.empty()) 
-                {
-                    cout << "Usage: /8 <name>" << endl;
-                    continue;
-                }
+               string u;
+               cout<<"拒绝添加好友,name:\n";
+               getline(cin,u);
+               
                 string msg = "拒绝添加好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1111,11 +1032,10 @@ int main(int argc, char* argv[])
             else if (cmd_name == "29")
              {
                  wrong=0;
-                if (args.empty()) 
-                {
-                    cout << "Usage: /29 <friend_name>" << endl;
-                    continue;
-                }
+              string u;
+               cout<<"删除好友,name:\n";
+               getline(cin,u);
+               
                 string msg = "删除好友 " + args + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
@@ -1129,11 +1049,10 @@ int main(int argc, char* argv[])
 }
             else if(cmd_name=="32")
 { wrong=0;
-  if(args.empty())
-  {
-    cerr<<"/32 name\n";
-    continue;
-  }
+  string u;
+               cout<<"读取未读消息，name:\n";
+               getline(cin,u);
+             
     string msg="读取未读消息 "+args+'\n';
     SSL_write1(ssl,msg.c_str(),msg.size());
   
@@ -1141,242 +1060,146 @@ int main(int argc, char* argv[])
             else if (cmd_name == "10") 
             { 
                 wrong=0;
-                size_t first_space = args.find(' ');
-                if (first_space == string::npos)
-                 {
-                    cout<<"name不能为空\n";
-                    cout << "Usage: /10 <target> <message>" << endl;
-                    continue;
-                }
-                string target = args.substr(0, first_space);
-                string content = args.substr(first_space + 1);
-                size_t pos = content.find_first_not_of(" ");
-                if (pos != string::npos) content = content.substr(pos);
-                if (target.empty() || content.empty()) {
-                    cout<<"content不能为空\n";
-                    cout << "Usage: /10 <target> <message>" << endl;
-                    continue;
-                }
+               string target,content;
+               cout<<"私聊，name:\n";
+               getline(cin,target);
+               cout<<"content:\n";
+               getline(cin,content);
                  string msg= "私聊 " + target + " " + content + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "16") 
             { wrong=0;
-                if (args.empty()) {
-                    cout << "Usage: /16 <group_name>" << endl;
-                    continue;
-                }
-                string msg = "创建群聊 " + args + "\n";
+                string u;
+                cout<<"传建群聊,groupname:";
+                getline(cin,u);
+                string msg = "创建群聊 " + u + "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "13")
              { wrong=0;
-                if (args.empty()) {
-                    cout << "Usage: /13 <group_name>" << endl;
-                    continue;
-                }
-                string msg = "加入群聊 " + args + "\n";
+                 string u;
+                cout<<"加入群聊,groupname:";
+                getline(cin,u);
+                string msg = "加入群聊 " + u+ "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="19")
             { wrong=0;
-                if (args.empty()) {
-                    cout << "Usage: /19 <group_name>" << endl;
-                    continue;
-                }
-                string msg = "查看群聊申请列表 " + args + "\n";
+                string u;
+                cout<<"查看群聊申请,groupname:";
+                getline(cin,u);
+                string msg = "查看群聊申请列表 " + u + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="20")
             { wrong=0;
-                size_t first_space = args.find(' ');
-                if (first_space == string::npos)
-                 {
-                    cout<<"group不能为空"<<endl;
-                    cout << "Usage: /20 <group> <name>" << endl;
-                    continue;
-                }
-                string target = args.substr(0, first_space);
-                string content = args.substr(first_space + 1);
-                size_t pos = content.find_first_not_of(" ");
-                if (pos != string::npos) content = content.substr(pos);
-                if (target.empty() || content.empty()) {
-                    cout<<"content不能为空\n";
-                    cout << "Usage: 20 <group> <name>" << endl;
-                    continue;
-                }
+               string target,content;
+               cout<<"同意加入群聊，groupname:\n";
+               getline(cin,target);
+               cout<<"membername:\n";
+               getline(cin,content);
                 string msg = "同意加入群聊 " + target + " " + content + "\n";
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd=="21")
             {
                  wrong=0;
-                 size_t first_space = args.find(' ');
-                if (first_space == string::npos)
-                 {
-                    cout<<"group不能为空"<<endl;
-                    cout << "Usage: /21 <group> <name>" << endl;
-                    continue;
-                }
-                string target = args.substr(0, first_space);
-                string content = args.substr(first_space + 1);
-                size_t pos = content.find_first_not_of(" ");
-                if (pos != string::npos) content = content.substr(pos);
-                if (target.empty() || content.empty()) {
-                    cout<<"name不能为空"<<endl;
-                    cout << "Usage: /21 <group> <name>" << endl;
-                    continue;
-                }
+                 string target,content;
+               cout<<"拒绝加入群聊，groupname:\n";
+               getline(cin,target);
+               cout<<"membername:\n";
+               getline(cin,content);
                 string msg = "拒绝加入群聊 " + target + " " + content + "\n";
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "15") 
             { wrong=0;
-                size_t first_space = args.find(' ');
-                if (first_space == string::npos) {
-                    cout<<"group不能为空"<<endl;
-                    cout << "Usage: /15 <group_name> <message>" << endl;
-                    continue;
-                }
-                string group = args.substr(0, first_space);
-                string content = args.substr(first_space + 1);
-                size_t pos = content.find_first_not_of(" ");
-                if (pos != string::npos) content = content.substr(pos);
-                if (group.empty() || content.empty()) {
-                    cout<<"content不能为空\n";
-                    cout << "Usage: /15 <group_name> <message>" << endl;
-                    continue;
-                }
-                string msg = "群聊 " + group + " " + content + "\n";
+                 string target,content;
+               cout<<"群聊，groupname:\n";
+               getline(cin,target);
+               cout<<"content:\n";
+               getline(cin,content);
+                string msg = "群聊 " + target + " " + content + "\n";
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "17") 
             { wrong=0;
-                if (args.empty()) {
-                    cout << "Usage: /17 <group_name>" << endl;
-                    continue;
-                }
-                string msg = "查看群成员 " + args + "\n";
+                string u;
+               cout<<"查看群聊成员,groupname:\n";
+               getline(cin,u);
+                string msg = "查看群成员 " +u + "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="22")
             { wrong=0;
-                 size_t first_space = args.find(' ');
-                if (first_space == string::npos) {
-                    cout<<"group不能为空"<<endl;
-                    cout << "Usage: /22 <group_name> <message>" << endl;
-                    continue;
-                }
-                string group = args.substr(0, first_space);
-                string content = args.substr(first_space + 1);
-                size_t pos = content.find_first_not_of(" ");
-                if (pos != string::npos) content = content.substr(pos);
-                if (group.empty() || content.empty()) {
-                    if(group.empty())
-                    {
-                        cout<<"group不能为空\n";
-                    }
-                    else
-                    {
-                        cout<<"name不能为空\n";
-                    }
-                    cout << "Usage: /22 <group_name> <name>" << endl;
-                    continue;
-                }
+               string group,content;
+               cout<<"移除成员，groupname:\n";
+               getline(cin,group);
+               cout<<"membername:\n";
+               getline(cin,content);
                 string msg = "移除成员 " + group + " " + content + "\n";
              SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "18") 
-            { wrong=0;
+            {    wrong=0;
                 string msg = "查看群聊列表\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name =="14")
             { wrong=0;
-                if(args.empty())
-                {
-                    cout << "Usage: /10 <group_name>" << endl;
-                    continue;
-                }
-                string msg="退出群聊 "+args+"\n";
+                string u;
+                cout<<"退出群聊，groupname\n";
+                getline(cin,u);
+                string msg="退出群聊 "+u+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name =="25")
             { wrong=0;
-                if(args.empty())
-                {
-                    cout << "Usage: /25 <group_name>" << endl;
-                    continue;
-                }
-                string msg="解散群聊 "+args+'\n';
+                 string u;
+                cout<<"解散群聊，groupname\n";
+                getline(cin,u);
+                string msg="解散群聊 "+u+'\n';
                 SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="23")
             { wrong=0;
-                if(args.empty())
-                {
-                    cout<<"group不能为空\n";
-                     cout << "Usage: /23 <group_name> <name>" << endl;
-                    continue;
-                }
-                 size_t pos=args.find_first_of(' ');
-                if(pos==args.size()-1||pos==0||pos==string::npos)
-                {
-                    cout<<"name不能为空\n";
-                    cout << "Usage: /23 <group_name> <name>" << endl;
-                    continue;
-                }
-                string qun=args.substr(0,pos);
-                string name=args.substr(pos+1);
-                string msg="设置管理员 "+qun+" "+name+'\n';
+               string u,m;
+               cout<<"设置管理员,groupname:\n";
+               getline(cin,u);
+               cout<<"name:\n";
+               getline(cin,m);
+                string msg="设置管理员 "+u+" "+m+'\n';
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="24")
             { wrong=0;
-                if(args.empty())
-                {
-                    cout<<"group不能为空\n";
-                     cout << "Usage: /24 <group_name> <name>" << endl;
-                    continue;
-                }
-                 size_t pos=args.find_first_of(' ');
-                if(pos==args.size()-1||pos==0||pos==string::npos)
-                {
-                    cout<<"name不能为空\n";
-                   cout << "Usage: /24 <group_name> <name>" << endl;
-                    continue;
-                }
-                string qun=args.substr(0,pos);
-                string name=args.substr(pos+1);
-                string msg="删除管理员 "+qun+" "+name+'\n';
+                
+                string u,m;
+               cout<<"删除管理员,groupname:\n";
+               getline(cin,u);
+               cout<<"name:\n";
+               getline(cin,m);
+                string msg="删除管理员 "+u+" "+m+'\n';
               SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if(cmd_name=="28")
             { wrong=0;
-                 if(args.empty())
-                {
-                    cout << "Usage: /28 <name>" << endl;
-                    continue;
-                }
-                string msg="查看聊天记录 "+args+"\n";
+              string u;
+              cout<<"查看聊天记录,name:\n";
+              getline(cin,u);
+                string msg="查看聊天记录 "+u+"\n";
                 
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "26") 
             { wrong=0;
-              if (args.empty()) {
-                cout<<"name不能为空\n";
-                 cout << "用法: /26 <目标> <文件路径>\n";
-                  continue;
-    }
-    size_t space_pos = args.find(' ');
-    if (space_pos == string::npos) {
-        cout<<"filepath不能为空\n";
-          cout << "用法: /26 <目标> <文件路径>\n";
-        continue;
-    }
-    string target = args.substr(0, space_pos);
-    string filepath = args.substr(space_pos + 1);
+             
+    string target ,filepath;
+    cout<<"上传文件,targetname:\n";
+    getline(cin,target);
+    cout<<"filepath\n";
+    getline(cin,filepath); 
 
     // 去除前导空格和尾部空格
    size_t start = filepath.find_first_not_of(" \t\r\n");
@@ -1423,11 +1246,10 @@ cerr << dec << endl;
 }
             else if (cmd_name == "30") {
                  wrong=0;
-                 if (args.empty()) {
-        cerr << "用法: /30 <文件路径>\n";
-        continue;
-                     }
-    string filepath = args;  
+              
+    string filepath;
+    cout<<"续传，filepath:\n";
+    getline(cin,filepath);
 
     ifstream file(filepath, ios::binary | ios::ate);
     if (!file.is_open()) {
@@ -1445,20 +1267,12 @@ cerr << dec << endl;
             else if(cmd_name=="27")
             {
                   wrong=0;
-              if (args.empty()) {
-                cout<<"file_id不能为空\n";
-                cout << "用法: /27 <file_id> <文件路径>\n";
-                   continue;
-                }
-
-    size_t space_pos = args.find(' ');
-    if (space_pos == string::npos) {
-        cout<<"filepath不能为空\n";
-      cout << "用法: /27 <file_id> <文件路径>\n";
-        continue;
-    }
-    string file_id = args.substr(0, space_pos);
-    string filepath = args.substr(space_pos + 1);
+             
+    string file_id,filepath;
+    cout<<"下载文件,file_id:\n";
+    getline(cin,file_id);
+    cout<<"filepath:\n";
+    getline(cin,filepath);
     if (filepath.empty()) 
     {
            cout<<"filepath不能为空\n";
