@@ -1395,8 +1395,24 @@ void list_friends(int fd)
             {
                 res+=" [离线]";
             }
+            res+="    未读消息：";
+             string key1="unread_size:"+ c.username+":"+reply->element[i]->str;
+             redisReply*unread=(redisReply*)redisCommand(redis_conn,"GET %s",key1.c_str());
+             if(unread&&unread->type==REDIS_REPLY_STRING)
+             {
+                res+=string(unread->str);
+             }
+             else
+             {
+                res+="0";
+             }
+             if(unread)
+             {
+                freeReplyObject(unread);
+             }
         }
-        res += "\n";
+      
+        res += "条\n";
         send_message(fd, res);
     } 
     else
