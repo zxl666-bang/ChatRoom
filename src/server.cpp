@@ -1525,7 +1525,7 @@ void siliao(int sender_fd, const string& target_name, const string& content)
     }
     if (c.username == target_name) 
     {
-         send_message(sender_fd, "不能和自己私聊\n");
+         send_message(sender_fd, "不能和自己私聊,不能私聊，请输入finish结束对话\n");
           return;
      }
     if (content.empty())
@@ -1535,12 +1535,12 @@ void siliao(int sender_fd, const string& target_name, const string& content)
      }
     if (!user_exists1(target_name))
      { 
-        send_message(sender_fd, "用户不存在\n");
+        send_message(sender_fd, "用户不存在,不能私聊，请输入finish结束对话\n");
          return;
      }
     if (!is_friend(c.username, target_name)) 
     { 
-        send_message(sender_fd, "不是好友，不能私聊\n");
+        send_message(sender_fd, "不是好友，不能私聊，请输入finish结束对话\n");
          return; 
     }
 string block="blocklist:"+target_name;
@@ -1552,7 +1552,7 @@ string block="blocklist:"+target_name;
      }
      if(reply->type==REDIS_REPLY_INTEGER&&reply->integer==1)
      {
-        send_message(sender_fd,"你被"+target_name+"屏蔽\n");
+        send_message(sender_fd,"你被"+target_name+"屏蔽，不能私聊，请输入finish结束对话\n");
         freeReplyObject(reply);
         return;
      }
@@ -1566,7 +1566,7 @@ string block="blocklist:"+target_name;
      }
      if(reply1->type==REDIS_REPLY_INTEGER&&reply1->integer==1)
      {
-        send_message(sender_fd,"你把"+target_name+"屏蔽\n");
+        send_message(sender_fd,"你把"+target_name+"屏蔽,不能私聊，消息发送失败，请输入finish结束对话\n");
         freeReplyObject(reply1);
         return;
      }

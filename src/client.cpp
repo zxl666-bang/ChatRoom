@@ -37,6 +37,8 @@ mutex ssl_mtu;
 mutex state_mtu;
 mutex menu_lock;
 bool menu=true;
+bool send_error_occurred = false;
+mutex error_mtu;
 size_t wrong=0;
 void send_menu()
 {
@@ -682,6 +684,24 @@ void recv_thread_func() {
     "/34;//注销\n"<<
     "====================请输入你的命令===================\n";
   
+}
+                else if(line.find("不能私聊")!=string::npos)
+                 {
+                   
+    cout << line << "\n";
+    {
+        lock_guard<mutex> lock(error_mtu);
+        send_error_occurred = true;
+    }
+}
+                else if(line.find("解除屏蔽成功")!=string::npos)
+                 {
+                   
+    cout << line << "\n";
+    {
+        lock_guard<mutex> lock(error_mtu);
+        send_error_occurred =false;
+    }
 }
                 else if(line=="命令完成"&&logged_in==true)
                 {
@@ -1351,6 +1371,13 @@ int main(int argc, char* argv[])
         blank_count = 0;  
         string msg = "私聊 " + target + " " + content + "\n";
         SSL_write1(ssl, msg.c_str(), msg.size());
+         {
+        lock_guard<mutex> lock(error_mtu);
+        if (send_error_occurred) {
+          
+            break;
+        }
+    }
     }
     cout << "消息发送结束。\n";
     send_menu();
