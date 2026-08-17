@@ -4,6 +4,7 @@
 #include <openssl/evp.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include<unordered_set>
 #ifndef my_bool
 #define my_bool unsigned char
 #endif
@@ -803,7 +804,7 @@ if (reply) {
     if(reply&&reply->type==REDIS_REPLY_STRING)
     {
          int count = stoi(reply->str);
-        string msg="你有来自"+sender+to_string(count)+"条未读消息，可以用/32 "+sender+"查看\n";
+        string msg="你有来自"+sender+"的 "+to_string(count)+"条未读消息，可以用/32 "+sender+"查看\n";
         xitongbobao(target,msg);
     }
     if(reply)
@@ -1383,6 +1384,12 @@ void list_friends(int fd)
     if (reply && reply->type == REDIS_REPLY_ARRAY)
      {
         string res = "好友: ";
+        if(reply->elements==0)
+        {
+            send_message(fd,"无好友\n");
+            freeReplyObject(reply);
+            return;
+        }
         for (size_t i = 0; i < reply->elements; ++i) 
         {
             if (i > 0) res += ", ";
@@ -1411,7 +1418,6 @@ void list_friends(int fd)
                 freeReplyObject(unread);
              }
         }
-      
         res += "条\n";
         send_message(fd, res);
     } 
@@ -1551,6 +1557,20 @@ string block="blocklist:"+target_name;
         return;
      }
      freeReplyObject(reply);
+     string block1="blocklist:"+clients[sender_fd].username;
+     redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",block1.c_str(),target_name.c_str());
+     if(reply1==nullptr)
+     {
+        send_message(sender_fd,"网不好\n");
+        return;
+     }
+     if(reply1->type==REDIS_REPLY_INTEGER&&reply1->integer==1)
+     {
+        send_message(sender_fd,"你把"+target_name+"屏蔽\n");
+        freeReplyObject(reply1);
+        return;
+     }
+     freeReplyObject(reply1);
     string msg = "[私聊]" + c.username + ":" + content + "\n";
     auto it = name_to_fd.find(target_name);
     if (it != name_to_fd.end()) 
@@ -1572,13 +1592,15 @@ if (incr_reply) {
     } 
     else
      {
-        send_message(sender_fd, "对方离线，已存储\n");
-        string key = "unread:" + target_name+":"+c.username;
-        redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
+        
         string key2="offline:"+target_name;
         redisCommand(redis_conn,"RPUSH %s %s",key2.c_str(),c.username.c_str());
-        string key3="unread_size:" + target_name+":"+c.username;
+         send_message(sender_fd, "对方离线，已存储\n");
+        string key = "unread:" + target_name+":"+c.username;
+        redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
+          string key3="unread_size:" + target_name+":"+c.username;
         redisReply* incr_reply = (redisReply*)redisCommand(redis_conn, "INCR %s", key3.c_str());
+      
 if (incr_reply) {
     cerr << "INCR success, new value: " << incr_reply->integer << endl;
     freeReplyObject(incr_reply);
@@ -2508,10 +2530,16 @@ void lixian(int ufd)
         freeReplyObject(reply);
         return;
     }
+    unordered_set<string>name;
     for (size_t i = 0; i < reply->elements; ++i) 
     {
-        string key2="unread_size:"+clients[ufd].username+":"+reply->element[i]->str;
-        send_unreadsize(key2,reply->element[i]->str,clients[ufd].username);
+       name.insert(reply->element[i]->str);
+       
+    }
+    for(const string&i:name)
+    {
+         string key2="unread_size:"+clients[ufd].username+":"+i;
+        send_unreadsize(key2,i,clients[ufd].username);
     }
     freeReplyObject(reply);
     redisCommand(redis_conn, "DEL %s", key.c_str());
@@ -2807,7 +2835,7 @@ void handle_command(int fd, const string& line)
         name_to_fd[username] = fd;
         set_online(username);
         send_message(fd, "LOGIN_OK "+username+"\n");
-        broadcast(fd, "[系统] " + username + " 加入了聊天。\n");
+        
         lixian(fd);
     } else {
         send_message(fd, "登录失败（用户名、密码、邮箱或验证码错误）\n");
@@ -2825,7 +2853,7 @@ void handle_command(int fd, const string& line)
         name_to_fd[username] = fd;
         set_online(username);
         send_message(fd, "LOGIN_OK "+username+"\n");
-        broadcast(fd, "[系统] " + username + " 加入了聊天。\n");
+        
         lixian(fd);
     } 
     else {

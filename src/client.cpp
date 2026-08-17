@@ -29,10 +29,14 @@ string pending_file_id;
 string pending_target;
 string pending_file_path;
 bool upload_ready = false;
+bool should_close;
+mutex close_mtu;
 SSL_CTX*ctx;
 SSL*ssl;
 mutex ssl_mtu;
 mutex state_mtu;
+mutex menu_lock;
+bool menu=true;
 size_t wrong=0;
 void send_menu()
 {
@@ -681,9 +685,17 @@ void recv_thread_func() {
 }
                 else if(line=="命令完成"&&logged_in==true)
                 {
-                    send_menu();
-                }
-                else if(line=="命令完成"&&!logged_in)
+                   bool print=false;
+                    {
+                        lock_guard<mutex> lock(menu_lock);
+                        print=menu;
+                    }
+                    if(print)
+                    {
+                        send_menu();
+                    }
+                    }
+                else if(line=="命令完成"&&!logged_in==false)
                 {
                     cerr<<"目录\n"<<
     "/1;发送验证码\n"<<
@@ -696,6 +708,12 @@ void recv_thread_func() {
     "/34;//注销\n"<<
     "====================请输入你的命令===================\n";
                 }
+                else if (line == "该用户已被注销" || line.rfind("注销成功",0)==0) {
+                    {
+            lock_guard<mutex> lock(close_mtu);
+           should_close=true;;
+                    }
+}
                 else if (line.rfind("UPLOAD_READY", 0) == 0) {
 
                     cerr << "DEBUG: Received UPLOAD_READY line: ["
@@ -902,7 +920,13 @@ int main(int argc, char* argv[])
     string line;
     while (getline(cin, line)) 
     {
-          
+            {
+        lock_guard<mutex> lock(close_mtu);
+        if (should_close) {
+            cout << "收到退出信号，程序正常退出...\n";
+          break;
+        }
+    }
         if (line.empty()) 
         {
             continue;
@@ -933,8 +957,7 @@ int main(int argc, char* argv[])
             string msg = "退出\n";
             SSL_write1(ssl, msg.c_str(), msg.size());
             cerr<<"退出程序"<<endl;
-            close(sockfd);
-           return 0;
+         break;
         }
             else if (cmd_name == "2") 
             {
@@ -1277,7 +1300,6 @@ int main(int argc, char* argv[])
     if (!SSL_write1(ssl, msg.c_str(), msg.size())) {
     cerr << "发送 list 命令失败" << endl;
 }
-    cerr << "list sent" << endl;
 }
             else if(cmd_name=="32")
 { wrong=0;
@@ -1293,24 +1315,46 @@ int main(int argc, char* argv[])
   
 }
             else if (cmd_name == "10") 
-            { 
-                wrong=0;
-               string target,content;
-               cout<<"私聊，name:\n";
-               getline(cin,target);
-               if(!get_args(target))
-               {
-                return 0;
-               }
-               cout<<"content:\n";
-                getline(cin,content);
-               if(!get_args(content))
-               {
-                return 0;
-               }
-                 string msg= "私聊 " + target + " " + content + "\n";
-                SSL_write1(ssl, msg.c_str(), msg.size());
+{ 
+    wrong=0;
+    string target, content;
+    cout << "私聊目标用户名: ";
+    getline(cin, target);
+    if (!get_args(target)) return 0;
+
+    cout << "请输入消息内容，每行一条，输入 finish 结束：\n";
+    int blank_count = 0;   // 连续空白计数
+    {
+        lock_guard<mutex> lock(menu_lock);
+        menu=false;
+    }
+    while (getline(cin, content)) {
+        if (content == "finish") {
+            {
+        lock_guard<mutex> lock(menu_lock);
+        menu=true;
+         
+    }
+            break;
+        }
+        if (content.empty()) {
+            blank_count++;
+            if (blank_count >= 5) {
+                cerr << "连续输入空白过多，是否继续？(y/n): ";
+                string choice;
+                getline(cin, choice);
+                if (choice != "y") break;
+                blank_count = 0;
             }
+            continue;
+        }
+        blank_count = 0;  
+        string msg = "私聊 " + target + " " + content + "\n";
+        SSL_write1(ssl, msg.c_str(), msg.size());
+    }
+    cout << "消息发送结束。\n";
+    send_menu();
+}
             else if (cmd_name == "16") 
             { wrong=0;
                 string u;
@@ -1385,22 +1429,43 @@ int main(int argc, char* argv[])
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "15") 
-            { wrong=0;
-                 string target,content;
-               cout<<"群聊，groupname:\n";
-               getline(cin,target);
-               if(!get_args(target))
-               {
-                return 0;
-               }
-               cout<<"content:\n";
-               getline(cin,content);
-               if(!get_args(content))
-               {
-                return 0;
-               }
-                string msg = "群聊 " + target + " " + content + "\n";
-                SSL_write1(ssl, msg.c_str(), msg.size());
+            {  wrong=0;
+    string target, content;
+    cout << "群聊,groupname: ";
+    getline(cin, target);
+    if (!get_args(target)) return 0;
+
+    cout << "请输入消息内容，每行一条，输入 finish 结束：\n";
+    int blank_count = 0;   // 连续空白计数
+    {
+        lock_guard<mutex> lock(menu_lock);
+        menu=false;
+    }
+    while (getline(cin, content)) {
+        if (content == "finish") {
+            {
+        lock_guard<mutex> lock(menu_lock);
+        menu=true;
+    }
+            break;
+        }
+        if (content.empty()) {
+            blank_count++;
+            if (blank_count >= 5) {
+                cerr << "连续输入空白过多，是否继续？(y/n): ";
+                string choice;
+                getline(cin, choice);
+                if (choice != "y") break;
+                blank_count = 0;
+            }
+            continue;
+        }
+        blank_count = 0;  
+        string msg = "群聊 " + target + " " + content + "\n";
+        SSL_write1(ssl, msg.c_str(), msg.size());
+    }
+    cout << "消息发送结束。\n";
+    send_menu();
             }
             else if (cmd_name == "17") 
             { wrong=0;
@@ -1641,6 +1706,8 @@ if(!get_args(filepath))
             
         }
     }
-    close(sockfd);
+   close(sockfd);
+SSL_free(ssl);
+SSL_CTX_free(ctx);
     return 0;
 }
