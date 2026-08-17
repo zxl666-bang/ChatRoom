@@ -685,6 +685,23 @@ void recv_thread_func() {
     "====================请输入你的命令===================\n";
   
 }
+                else if(line.find("history:")==0)
+                {
+                     string msg = line.substr(8); 
+    size_t colon = msg.find(':');
+    if (colon != string::npos) {
+        string sender = msg.substr(0, colon);
+        string content = msg.substr(colon + 1);
+        lock_guard<mutex> lock(state_mtu); 
+        if (sender == username) {
+            
+            cout  << right << setw(60) << msg << endl; 
+        } else {
+            
+            cout<< left << setw(60) << msg << endl;
+        }
+    }
+                }
                 else if(line.find("不能私聊")!=string::npos)
                  {
                    

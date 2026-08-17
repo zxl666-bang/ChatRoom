@@ -18,7 +18,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include<algorithm>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -1114,7 +1113,8 @@ void get_hisory(int ufd,const string&target)
   vector<string>msg;
   while(it->Valid()&&it->key().starts_with(value))
   {
-    string content=it->value().ToString()+"\n";
+    string content="history:";
+    content+=it->value().ToString()+"\n";
     msg.push_back(content);
     it->Next();
   }
@@ -1130,11 +1130,8 @@ void get_hisory(int ufd,const string&target)
     send_message(ufd,"没有聊天记录\n");
     return;
   }
-  if(msg.size()>20)
-  {
-    msg.erase(msg.begin(),msg.begin()+(msg.size()-20));
-  }
-  reverse(msg.begin(),msg.end());
+  
+ 
   size_t n=msg.size()>200?200:msg.size();
   send_message(ufd,"近"+to_string(n)+"条聊天记录\n");
   for(size_t i=0;i<msg.size();i++)
