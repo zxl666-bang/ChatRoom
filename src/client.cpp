@@ -43,6 +43,7 @@ mutex error_mtu;
 size_t wrong=0;
 void send_menu()
 {
+    cerr << "send_menu called" << endl;
     cerr << "=============================================\n";
     cerr << left << setw(20) << "/5 添加好友"
          << setw(20) << "/6 列出好友申请" << "\n";
@@ -707,8 +708,15 @@ void recv_thread_func() {
     }
                 }
                 else if(line.find("不能私聊")!=string::npos)
-                 {
-                   
+                 {        
+    cout << line << "\n";
+    {
+        lock_guard<mutex> lock(error_mtu);
+        send_error_occurred = true;
+    }
+}
+                else if(line.find("不能群聊")!=string::npos)
+                 {        
     cout << line << "\n";
     {
         lock_guard<mutex> lock(error_mtu);
@@ -1343,7 +1351,7 @@ int main(int argc, char* argv[])
 }
 }
             else if(cmd_name=="32")
-{ wrong=0;
+{      wrong=0;
   string u;
                cout<<"读取未读消息，name:\n";
                getline(cin,u);
@@ -1361,40 +1369,32 @@ int main(int argc, char* argv[])
     string target, content;
     cout << "私聊目标用户名: ";
     getline(cin, target);
-    if (!get_args(target)) return 0;
+    if (!get_args(target))
+     return 0;
 
     cout << "请输入消息内容，每行一条，输入 finish 结束：\n";
     string msg1= "私聊 " + target + " " + "begin" + "\n";
      SSL_write1(ssl, msg1.c_str(), msg1.size());
-    int blank_count = 0;   // 连续空白计数
+    int blank_count = 0;  
     {
         lock_guard<mutex> lock(menu_lock);
         menu=false;
     }
     while (true) {
-        {
-            lock_guard<mutex> lock(error_mtu);
-            if(send_error_occurred)
-            {
-               string msg = "私聊 " + target + " " + "finish" + "\n";
-               SSL_write1(ssl, msg.c_str(), msg.size());
-               break;
-            }
-        }
-        fd_set read_fds;
-    FD_ZERO(&read_fds);
-    FD_SET(STDIN_FILENO, &read_fds);
-    struct timeval tv = {0, 100000}; // 100ms 超时
-    int ret=select(STDIN_FILENO+1,&read_fds,nullptr,nullptr,&tv);
-    if(ret<0)
+       {
+    lock_guard<mutex> lock(error_mtu);
+    if(send_error_occurred)
     {
+        cerr << "[DEBUG] Error detected, sending finish" << endl;
+        string msg = "私聊 " + target + " " + "finish" + "\n";
+        SSL_write1(ssl, msg.c_str(), msg.size());
+        send_error_occurred = false;   // 直接修改，不需要再锁
+        cerr << "[DEBUG] Error flag reset, calling send_menu" << endl;
+        fflush(stdout); fflush(stderr);
         break;
-         perror("select");
     }
-    else if(ret==0)
-{
-    continue;
 }
+     
     getline(cin,content);
     if (content == "finish") {
             {
@@ -1422,13 +1422,22 @@ int main(int argc, char* argv[])
          {
         lock_guard<mutex> lock(error_mtu);
         if (send_error_occurred) {
-          
+            {
+                send_error_occurred=false;
+            } 
+            {
+        lock_guard<mutex> lock(menu_lock);
+        menu=true;}
             break;
         }
     }
     }
     cout << "消息发送结束。\n";
-    send_menu();
+    {
+        {
+        lock_guard<mutex> lock(menu_lock);
+        menu=true;}
+    }
 }
             else if (cmd_name == "16") 
             { wrong=0;
@@ -1512,12 +1521,46 @@ int main(int argc, char* argv[])
      string msg = "群聊 " + target + " " + "begin" + "\n";
       SSL_write1(ssl, msg.c_str(), msg.size());
     cout << "请输入消息内容，每行一条，输入 finish 结束：\n";
-    int blank_count = 0;   // 连续空白计数
+    int blank_count = 0;  
     {
         lock_guard<mutex> lock(menu_lock);
         menu=false;
     }
-    while (getline(cin, content)) {
+    while (true) {
+        {
+            lock_guard<mutex> lock(error_mtu);
+            if(send_error_occurred)
+            {
+                 string content = "finish";
+            {
+        lock_guard<mutex> lock(menu_lock);
+        menu=true;
+      }
+     string msg = "群聊 " + target + " " + content + "\n";
+     SSL_write1(ssl, msg.c_str(), msg.size());
+     send_error_occurred=false;
+            break;
+        }
+        }
+
+           fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(STDIN_FILENO, &read_fds);
+    struct timeval tv = {0, 100000}; 
+    int ret=select(STDIN_FILENO+1,&read_fds,nullptr,nullptr,&tv);
+    if(ret<0)
+    {
+        {
+        lock_guard<mutex> lock(menu_lock);
+        menu=true;}
+        break;
+         perror("select");
+    }
+    else if(ret==0)
+{
+    continue;
+}
+getline(cin,content);
         if (content == "finish") {
             {
         lock_guard<mutex> lock(menu_lock);
@@ -1675,6 +1718,7 @@ if(!get_args(filepath))
     if (start == string::npos) {
         cout<<"name不能为空\n";
          cout << "用法: /26 <目标> <文件路径>\n";
+         send_menu();
         continue;
     }
    size_t end = filepath.find_last_not_of(" \t\r\n");
@@ -1683,18 +1727,21 @@ if(!get_args(filepath))
     if (filepath.empty()) {
         cout<<"filepath不能为空\n";
          cout << "用法: /26 <目标> <文件路径>\n";
+         send_menu();
         continue;
     }
 
     ifstream file(filepath, ios::binary | ios::ate);
     if (!file.is_open()) {
         cout<<"file打不开"<<endl;
+        send_menu();
         continue;
     }
     size_t filesize = file.tellg();
     file.close();
     if (filesize == 0) {
          cout << "文件为空\n";
+         send_menu();
         continue;
     }
 

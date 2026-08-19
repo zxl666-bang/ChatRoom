@@ -1292,7 +1292,10 @@ void addfirends(int fd,const string &target)
      redisReply*reply2=(redisReply*)redis_command(redis_conn,"SADD %s %s",key2.c_str(),CLIENT(fd)->username.c_str());
     if (reply2 && reply2->type == REDIS_REPLY_INTEGER)
      {
+         string key="offline_firends:"+target;
+        redisCommand(redis_conn,"SADD %s %s",key.c_str(),CLIENT(fd)->username.c_str());
         send_message(fd, (reply2->integer == 1) ? "发送好友申请成功\n" : "网不好");
+       
     } 
     else 
     {
@@ -1726,7 +1729,6 @@ string block="blocklist:"+target_name;
         {
              string key = "unread:" + target_name+":"+c.username;
              redis_command(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
-            send_message(sender_fd, "发送完成\n");
            string place=(c.username<target_name)?c.username+":"+target_name:target_name+":"+c.username;
            store_history(c.username,place,content);
            string key1="unread_size:"+ target_name+":"+c.username;
@@ -2479,12 +2481,12 @@ void qunliao(int sender_fd, const string& qun, const string& content)
     redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", group_key.c_str());
     if (reply == nullptr) 
     {
-         send_message(sender_fd, "网络错误\n");
+         send_message(sender_fd, "网络错误,不能群聊\n");
           return;
      }
     if (reply->type != REDIS_REPLY_INTEGER || reply->integer != 1) 
     {
-        send_message(sender_fd, "群不存在\n");
+        send_message(sender_fd, "群不存在,不能群聊\n");
         if (reply) freeReplyObject(reply);
         return;
     }
@@ -2492,12 +2494,12 @@ void qunliao(int sender_fd, const string& qun, const string& content)
     reply = (redisReply*)redis_command(redis_conn, "SISMEMBER %s %s", members_key.c_str(), CLIENT(sender_fd)->username.c_str());
     if (reply == nullptr) 
     {
-         send_message(sender_fd, "网络错误\n"); 
+         send_message(sender_fd, "网络错误，不能群聊\n"); 
          return;
      }
     if (reply->type != REDIS_REPLY_INTEGER || reply->integer != 1)
      {
-        send_message(sender_fd, "你不是群成员\n");
+        send_message(sender_fd, "你不是群成员，不能群聊\n");
         if (reply) freeReplyObject(reply);
         return;
     }
@@ -2506,7 +2508,7 @@ void qunliao(int sender_fd, const string& qun, const string& content)
     reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", members_key.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_ARRAY)
      {
-        send_message(sender_fd, "获取成员列表失败\n");
+        send_message(sender_fd, "获取成员列表失败，不能群聊\n");
         if (reply)
          freeReplyObject(reply);
         return;
@@ -2570,7 +2572,6 @@ if (incr_reply) {
     freeReplyObject(reply);
     string place="group:"+qun;
     store_history(CLIENT(sender_fd)->username,place,content);
-    send_message(sender_fd, "群发完成\n");
 }
 
 void chachengyuan(int ufd, const string& qun)
@@ -2705,6 +2706,18 @@ void lixian(int ufd)
     }
     freeReplyObject(reply);
     redis_command(redis_conn, "DEL %s", key.c_str());
+    string key1="offline_firends:"+CLIENT(ufd)->username;
+    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SMEMBERS %s",key1.c_str());
+    if(reply1&&reply1->type==REDIS_REPLY_ARRAY&&reply1->elements>0)
+    {
+        size_t n=reply1->elements;
+        string msg1="你有"+to_string(n)+"条好友申请\n";
+       send_message(ufd,msg1);
+    }
+    if(reply1)
+    {
+        freeReplyObject(reply1);
+    }
     send_message(ufd, "消息拉取完成\n");
 }
 
@@ -3668,8 +3681,7 @@ int main()
                         break;
                     }
                       int heart=1;
-                    setsockopt(client_fd,SOL_SOCKET,SO_KEEPALIVE,&heart,sizeof(heart));
-                    
+                    setsockopt(client_fd,SOL_SOCKET,SO_KEEPALIVE,&heart,sizeof(heart));                 
                     if (set_nonblocking(client_fd) < 0) {
                         perror("set_nonblocking client");
                         close(client_fd);
