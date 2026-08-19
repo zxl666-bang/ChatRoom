@@ -1623,6 +1623,16 @@ void jiechupinbi(int ufd,const string&name)
     }
     send_message(ufd,"解除屏蔽成功\n");
     freeReplyObject(reply2);
+    int target_fd = -1;
+    { lock_guard<recursive_mutex> lk(routing_mutex);
+         auto it = name_to_fd.find(name); 
+         if (it != name_to_fd.end()) 
+         target_fd = it->second; 
+    }
+    if (target_fd != -1) 
+    {
+        send_message(target_fd,"解除屏蔽成功\n");
+    }
     return;
 
 }
@@ -1665,7 +1675,7 @@ string block="blocklist:"+target_name;
      }
      if(reply->type==REDIS_REPLY_INTEGER&&reply->integer==1)
      {
-        send_message(sender_fd,"你被"+target_name+"屏蔽，不能私聊，请输入finish结束对话\n");
+        send_message(sender_fd,"你被"+target_name+"屏蔽，不能私聊\n");
         freeReplyObject(reply);
         return;
      }
@@ -1679,7 +1689,7 @@ string block="blocklist:"+target_name;
      }
      if(reply1->type==REDIS_REPLY_INTEGER&&reply1->integer==1)
      {
-        send_message(sender_fd,"你把"+target_name+"屏蔽,不能私聊，消息发送失败，请输入finish结束对话\n");
+        send_message(sender_fd,"你把"+target_name+"屏蔽,不能私聊，消息发送失败\n");
         freeReplyObject(reply1);
         return;
      }
@@ -1705,8 +1715,8 @@ string block="blocklist:"+target_name;
         }
         if(is_chat)
         {
-            send_message(target_fd,msg);
-            send_message(sender_fd,msg);
+            string msg2=c.username+":"+content+'\n';
+            send_message(target_fd,msg2);
              string place = (c.username < target_name) ? c.username + ":" + target_name : target_name + ":" + c.username;
     store_history(c.username, place, content);
     return;
@@ -2511,10 +2521,29 @@ void qunliao(int sender_fd, const string& qun, const string& content)
         string member = reply->element[i]->str;
         if (member == CLIENT(sender_fd)->username) 
         {continue;}
+        
         int member_fd = -1;
         { lock_guard<recursive_mutex> lk(routing_mutex); auto it = name_to_fd.find(member); if (it != name_to_fd.end()) member_fd = it->second; }
         if (member_fd != -1) 
         {
+             bool is_chat=false;
+        {
+        lock_guard<mutex> lock(chat_group_mtu);
+        auto it=chat_group.find(member);
+        if(it!=chat_group.end()&&it->second==qun)
+        {
+            is_chat=true;
+        }
+    }
+    if(is_chat)
+    {
+        string msg1=CLIENT(sender_fd)->username+":"+content+'\n';
+        send_message(member_fd,msg1);
+         string place="group:"+qun;
+    store_history(CLIENT(sender_fd)->username,place,content);
+    }
+    else
+    {
              string key = "unread:" + member+":"+qun;
              redis_command(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
            string key1="unread_size:"+ member+":"+qun;
@@ -2526,7 +2555,7 @@ if (incr_reply) {
     cerr << "INCR failed" << endl;
 }
            send_unreadsize(key1,qun,member);
-        } 
+        } }
         else
          {
              string key = "unread:" + member+":"+qun;
@@ -3220,13 +3249,32 @@ void handle_command(int fd, const string& line)
         }
         getline(iss, content);
         size_t pos = content.find_first_not_of(" ");
+        
         if (pos == string::npos) 
         { 
             send_message(fd, "消息不能为空\n");
              return;
          }
-        content = content.substr(pos);
-        qunliao(fd, qun, content);
+          content = content.substr(pos);
+          if(content!="finish")
+        {
+            if(content=="begin")
+            {
+            lock_guard<mutex> lock(chat_group_mtu);
+            chat_group[CLIENT(fd)->username]=qun;}
+            else
+           {
+              qunliao(fd, qun, content);
+           }
+        }
+          else
+        {
+            {
+                lock_guard<mutex> lock(chat_group_mtu);
+                chat_group.erase( CLIENT(fd)->username);
+            }
+        }
+      
     }
     else if(cmd=="解散群聊")
     {

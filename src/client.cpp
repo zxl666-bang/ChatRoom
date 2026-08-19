@@ -11,6 +11,7 @@
 #include <netinet/in.h>
 #include<vector>
 #include<endian.h>
+#include<sys/select.h>
 #include<sys/stat.h>
 #include <arpa/inet.h>
 #include<mutex>
@@ -1367,8 +1368,32 @@ int main(int argc, char* argv[])
         lock_guard<mutex> lock(menu_lock);
         menu=false;
     }
-    while (getline(cin, content)) {
-        if (content == "finish") {
+    while (true) {
+        {
+            lock_guard<mutex> lock(error_mtu);
+            if(send_error_occurred)
+            {
+               string msg = "私聊 " + target + " " + "finish" + "\n";
+               SSL_write1(ssl, msg.c_str(), msg.size());
+               break;
+            }
+        }
+        fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(STDIN_FILENO, &read_fds);
+    struct timeval tv = {0, 100000}; // 100ms 超时
+    int ret=select(STDIN_FILENO+1,&read_fds,nullptr,nullptr,&tv);
+    if(ret<0)
+    {
+        break;
+         perror("select");
+    }
+    else if(ret==0)
+{
+    continue;
+}
+    getline(cin,content);
+    if (content == "finish") {
             {
         lock_guard<mutex> lock(menu_lock);
         menu=true;
@@ -1481,7 +1506,8 @@ int main(int argc, char* argv[])
     cout << "群聊,groupname: ";
     getline(cin, target);
     if (!get_args(target)) return 0;
-
+     string msg = "群聊 " + target + " " + "begin" + "\n";
+      SSL_write1(ssl, msg.c_str(), msg.size());
     cout << "请输入消息内容，每行一条，输入 finish 结束：\n";
     int blank_count = 0;   // 连续空白计数
     {
@@ -1494,6 +1520,8 @@ int main(int argc, char* argv[])
         lock_guard<mutex> lock(menu_lock);
         menu=true;
     }
+     string msg = "群聊 " + target + " " + content + "\n";
+     SSL_write1(ssl, msg.c_str(), msg.size());
             break;
         }
         if (content.empty()) {
