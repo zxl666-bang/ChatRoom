@@ -207,7 +207,8 @@ void notify_reciver(redisContext* redis, const string& file_id) {
                 if (member_fd != -1) {
                     send_message(member_fd, notify_msg);
                 } else {
-                    redis_command(redis, "RPUSH %s %s", ("offline:" + member).c_str(), notify_msg.c_str());
+                     cerr<<"对方离线，已存储\n";
+            redis_command(redis, "INCR %s", ("offlinefiles:" + target).c_str());
                 }
                 // 3. 存储历史（每个成员一条，群聊历史）
                 store_history(sender, member, notify_msg);
