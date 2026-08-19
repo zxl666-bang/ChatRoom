@@ -763,7 +763,7 @@ void recv_thread_func() {
            should_close=true;;
                     }
 }
-                else if (line.rfind("UPLOAD_READY", 0) == 0) {
+                else if (line.rfind("UPLOAD_COMPLETE", 0) == 0) {
 
                     cerr << "DEBUG: Received UPLOAD_READY line: ["
                          << line << "]" << endl;
@@ -1586,7 +1586,6 @@ getline(cin,content);
         SSL_write1(ssl, msg.c_str(), msg.size());
     }
     cout << "消息发送结束。\n";
-    send_menu();
             }
             else if (cmd_name == "17") 
             { wrong=0;
@@ -1810,6 +1809,12 @@ if(!get_args(filepath))
      thread download_thread(start_download, file_id, filepath);
     download_thread.detach();
     } 
+            else if(cmd_name=="38")
+            {
+                wrong=0;
+                string msg="查看可下载文件\n";
+                 SSL_write1(ssl, msg.c_str(), msg.size());
+            }
             else if (cmd_name== "36") 
         {
             wrong=0;

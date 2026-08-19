@@ -234,10 +234,8 @@ if (target_fd != -1) {
             send_message(target_fd, notify_msg);
            string place=sender<target?sender+":"+target:target+":"+sender;
            store_history(sender, place, notify_msg);
-           
         }
     }
-
     cout << "===================================="
          << endl;
 }
@@ -254,6 +252,8 @@ else {
         ("offline:" + target).c_str(),
         notify_msg.c_str()
     );
+             string key="files:"+target;
+           redisCommand(redis,"RPUSH %s %s",key.c_str(),notify_msg.c_str());
     cout << "========== STORE FILE HISTORY ==========" << endl;
 cout << "sender = [" << sender << "]" << endl;
 cout << "target = [" << target << "]" << endl;
@@ -278,6 +278,8 @@ cout << "========== STORE FILE HISTORY DONE ==========" << endl;
             redis_command(redis, "RPUSH %s %s", ("offline:" + member).c_str(), notify_msg.c_str());
             store_history(sender,member,notify_msg);
         }
+        string key="files:"+member;
+        redisCommand(redis_conn,"RPUSH %s %s",key.c_str(),file_id.c_str());
     }
     }
     else {
@@ -595,16 +597,19 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
 }
 cout << "DEBUG: rename result:success"  << endl;
     
-        redis_command(redis, "HSET %s status complete", meta_key.c_str());
-       
-        redis_command(redis, "DEL %s", progress_key.c_str());
-       
-        cout << "DEBUG: About to call notify_reciver" << endl;
-        notify_reciver(redis, file_id);
-       
-        cout << "Upload complete, notifying receiver..." << endl;
-        close_connection(fd);
-        return;
+      redis_command(redis, "HSET %s status complete", meta_key.c_str());
+    redis_command(redis, "DEL %s", progress_key.c_str());
+
+    // 向发送端发送成功确认
+    string complete_msg = "UPLOAD_COMPLETE " + file_id + "\n";
+    send_message(fd, complete_msg);
+
+    cout << "DEBUG: About to call notify_reciver" << endl;
+    notify_reciver(redis, file_id);
+    cout << "Upload complete, notifying receiver..." << endl;
+
+    return;
+
     }
 
   

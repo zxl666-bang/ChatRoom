@@ -1292,9 +1292,16 @@ void addfirends(int fd,const string &target)
      redisReply*reply2=(redisReply*)redis_command(redis_conn,"SADD %s %s",key2.c_str(),CLIENT(fd)->username.c_str());
     if (reply2 && reply2->type == REDIS_REPLY_INTEGER)
      {
-         string key="offline_firends:"+target;
-        redisCommand(redis_conn,"SADD %s %s",key.c_str(),CLIENT(fd)->username.c_str());
-        send_message(fd, (reply2->integer == 1) ? "发送好友申请成功\n" : "网不好");
+        string key1="add_firends:"+ target;
+           redisReply* incr_reply = (redisReply*)redis_command(redis_conn, "INCR %s", key1.c_str());
+if (incr_reply) {
+    cerr << "INCR success, new value: " << incr_reply->integer << endl;
+    freeReplyObject(incr_reply);
+    send_message(fd, (reply2->integer == 1) ? "发送好友申请成功\n" : "网不好");
+} else {
+    cerr << "INCR failed" << endl;
+}
+        
        
     } 
     else 
@@ -2706,13 +2713,15 @@ void lixian(int ufd)
     }
     freeReplyObject(reply);
     redis_command(redis_conn, "DEL %s", key.c_str());
-    string key1="offline_firends:"+CLIENT(ufd)->username;
-    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SMEMBERS %s",key1.c_str());
-    if(reply1&&reply1->type==REDIS_REPLY_ARRAY&&reply1->elements>0)
+    string key1="add_firends:"+CLIENT(ufd)->username;
+    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"GET %s",key1.c_str());
+    if(reply1&&reply1->type==REDIS_REPLY_STRING)
     {
-        size_t n=reply1->elements;
-        string msg1="你有"+to_string(n)+"条好友申请\n";
-       send_message(ufd,msg1);
+        int n=stoi(reply1->str);
+        if(n>0)
+        {string msg1="你有"+to_string(n)+"条好友申请\n";
+       send_message(ufd,msg1);}
+       redis_command(redis_conn,"DEL %s",key1.c_str());
     }
     if(reply1)
     {
@@ -2831,6 +2840,7 @@ void tuiqun(int ufd,const string&qun)
      freeReplyObject(reply3);
    return;
 }
+
 void jiesan(int ufd,const string&qun)
 {
     if(CLIENT(ufd)->logged_in==false)
@@ -2945,6 +2955,41 @@ void tuichu(int fd)
     send_message(fd, "退出登录成功\n");
 }
 
+void files(int fd)
+{
+    Client&c=*CLIENT(fd);
+    if(c.logged_in==false)
+    {
+        send_message(fd,"先登录\n");
+        return;
+    }
+    string key="files:"+c.username;
+    redisReply*reply=(redisReply*)redisCommand(redis_conn,"LRANGE %s 0 -1",key.c_str());
+    if(reply&&reply->type==REDIS_REPLY_ARRAY)
+    {
+        size_t n=reply->elements;
+        if(n==0)
+        {
+            send_message(fd,"没有待下载文件\n");
+            freeReplyObject(reply);
+            return;
+        }
+        for(size_t i=0;i<n;i++)
+        {
+            send_message(fd,reply->element[i]->str);
+        }
+        send_message(fd,"加载完毕\n");
+    }
+    else
+    {
+        send_message(fd,"列出文件失败\n");
+    }
+    if(reply)
+    {
+        freeReplyObject(reply);
+    }
+    return;
+}
 void handle_command(int fd, const string& line)
  {
     
@@ -3398,6 +3443,14 @@ void handle_command(int fd, const string& line)
             return;
         }
         tuiqun(fd,group);
+    }
+    else if(cmd=="查看可下载文件")
+    {
+        if(CLIENT(fd)->logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
+        files(fd);
     }
     else if (cmd == "UPLOAD_FILE") {
 
