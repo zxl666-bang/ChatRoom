@@ -517,7 +517,8 @@ void start_download(const string& file_id, const string& filepath) {
     }
 
     int file_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (file_sock < 0) {
+    if (file_sock < 0) 
+    {
         perror("socket");
         return;
     }
@@ -853,6 +854,17 @@ void recv_thread_func() {
 
                         upload_thread.detach();
                     }
+                }
+                else if(line.find("FILE_INFO")==0)
+                {
+                     stringstream ss(line);
+    string cmd, filename, filesize_str, file_id;
+    ss >> cmd >> filename >> filesize_str >> file_id;
+    // 可忽略 filename 和 filesize
+    cout << "服务器允许下载，开始下载..." << endl;
+    // 启动下载线程，需要知道保存路径（可以在 /27 时设置 pending_file_path）
+    thread download_thread(start_download, file_id, pending_file_path);
+    download_thread.detach();
                 }
                 else if (line.rfind("FILE_NOTIFY", 0) == 0) {
 
@@ -1437,6 +1449,10 @@ int main(int argc, char* argv[])
 }
      
     getline(cin,content);
+    cout << "\033[1A\033[2K\r";
+    if (content != "finish") {
+        cout << right << setw(60) <<  content<< endl;
+    }
     if (content == "finish") {
             {
         lock_guard<mutex> lock(menu_lock);
@@ -1602,6 +1618,10 @@ int main(int argc, char* argv[])
     continue;
 }
 getline(cin,content);
+cout << "\033[1A\033[2K\r";
+    if (content != "finish") {
+        cout << right << setw(60) <<  content<< endl;
+    }
         if (content == "finish") {
             {
         lock_guard<mutex> lock(menu_lock);
@@ -1853,8 +1873,8 @@ if(!get_args(filepath))
         continue;
     }
     pending_file_path = filepath;
-     thread download_thread(start_download, file_id, filepath);
-    download_thread.detach();
+    string msg="DOWNLOAD_FILE "+file_id+" "+filepath+'\n';
+   SSL_write1(ssl,msg.c_str(),msg.size());
     } 
             else if(cmd_name=="38")
             {

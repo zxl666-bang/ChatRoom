@@ -3529,16 +3529,10 @@ void handle_command(int fd, const string& line)
         send_message(fd, "用法: DOWNLOAD_FILE <file_id>\n");
         return;
     }
-
-    if (!CLIENT(fd)->logged_in) {
-        send_message(fd, "请先登录\n");
-        return;
-    }
-
     string meta_key = "file:meta:" + file_id;
     redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", meta_key.c_str());
     if (!reply || reply->type != REDIS_REPLY_INTEGER || reply->integer != 1) {
-        send_message(fd, "文件不存在\n");
+        send_message(fd, "文件不存在,不能下载文件\n");
         if (reply) freeReplyObject(reply);
         return;
     }
@@ -3546,7 +3540,7 @@ void handle_command(int fd, const string& line)
 
     reply = (redisReply*)redis_command(redis_conn, "HGET %s status", meta_key.c_str());
     if (!reply || reply->type != REDIS_REPLY_STRING || string(reply->str) != "complete") {
-        send_message(fd, "文件未上传完成，无法下载\n");
+        send_message(fd, "文件未上传完成，不能下载文件\n");
         if (reply) freeReplyObject(reply);
         return;
     }
@@ -3559,7 +3553,7 @@ void handle_command(int fd, const string& line)
     string filename = get_filename_meta(file_id, redis_conn);
     long long filesize = get_file_size(file_id, redis_conn);
     if (filesize < 0) {
-        send_message(fd, "获取文件信息失败\n");
+        send_message(fd, "获取文件信息失败，不能下载文件\n");
         return;
     }
 
