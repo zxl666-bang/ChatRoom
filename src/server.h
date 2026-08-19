@@ -24,7 +24,6 @@
 #include <vector>
 #include <cstdint>
 #include <atomic>
-#include <shared_mutex>
 #include <memory>
 
 using namespace std;
@@ -77,6 +76,7 @@ void close_connection(int fd);
 void flush_send_buffer(int fd);
 void send_message(int fd, const std::string& msg);
 void siliao(int sender_fd, const string& target_name, const string& content);
+void qunliao(int fd,const string&qun,const string&content);
 void qunliao(int sender_fd, const string& qun, const string& content);
 void xitongbobao(const string&name,const string&msg);
 bool is_friend(const string& user, const string& target);

@@ -158,6 +158,7 @@ void cleanup_temp_files(redisContext* redis) {
 }
 
 void notify_reciver(redisContext* redis, const string& file_id) {
+    cerr<<"notify_reciver"<<endl;
     string meta_key = "file:meta:" + file_id;
 
     redisReply* reply1 = (redisReply*)redis_command(redis, "HGET %s sender", meta_key.c_str());
@@ -180,112 +181,40 @@ void notify_reciver(redisContext* redis, const string& file_id) {
     if (reply4) freeReplyObject(reply4);
 
     string notify_msg = "FILE_NOTIFY " + sender + " " + filename + " " + file_id + " " + (is_group ? "group" : "private") + "\n";
-     cout << "notify_reciver called for file_id: " << file_id << endl;
-       cout << "notify_reciver called, is_group=" << is_group << endl;
+
     if (!is_group) {
-       
-       int target_fd = find_client_fd_by_name(target);
-
-if (target_fd != -1) {
-
-    cout << "====================================" << endl;
-    cout << "FILE NOTIFY DEBUG" << endl;
-    cout << "target username = [" << target << "]" << endl;
-    cout << "target fd       = " << target_fd << endl;
-
-    auto client_it = get_client(target_fd);
-
-    if (!client_it) {
-
-        cerr << "ERROR: target fd not found in clients"
-             << endl;
-
-    } else {
-
-        cout << "actual client username = ["
-             << client_it->username
-             << "]" << endl;
-
-        cout << "logged_in = "
-             << client_it->logged_in
-             << endl;
-
-        cout << "handshake = "
-             << client_it->handshak_down
-             << endl;
-
-        if (client_it->username != target) {
-
-            cerr << "!!! USERNAME -> FD MAPPING ERROR !!!"
-                 << endl;
-
-            cerr << "name_to_fd[" << target << "] = "
-                 << target_fd << endl;
-
-            cerr << "but clients[" << target_fd << "].username = "
-                 << client_it->username
-                 << endl;
-        }
-        else {
-
-            cout << "Mapping correct, sending FILE_NOTIFY"
-                 << endl;
-
+        redis_command(redis, "RPUSH %s %s", ("files:" + target).c_str(), notify_msg.c_str());
+        int target_fd = find_client_fd_by_name(target);
+        if (target_fd != -1) {
             send_message(target_fd, notify_msg);
-           string place=sender<target?sender+":"+target:target+":"+sender;
-           store_history(sender, place, notify_msg);
-        }
-    }
-    cout << "===================================="
-         << endl;
-}
-else {
-
-    cout << "Target offline: ["
-         << target
-         << "]"
-         << endl;
-
-    redis_command(
-        redis,
-        "RPUSH %s %s",
-        ("offline:" + target).c_str(),
-        notify_msg.c_str()
-    );
-             string key="files:"+target;
-           redisCommand(redis,"RPUSH %s %s",key.c_str(),notify_msg.c_str());
-    cout << "========== STORE FILE HISTORY ==========" << endl;
-cout << "sender = [" << sender << "]" << endl;
-cout << "target = [" << target << "]" << endl;
-cout << "notify_msg = [" << notify_msg << "]" << endl;
-string place=sender<target?sender+":"+target:target+":"+sender;
-store_history(sender, place, notify_msg);
-
-cout << "========== STORE FILE HISTORY DONE ==========" << endl;
-}
-    }  else {
-    string members_key = "group:" + target+":members:";
-    redisReply* members_reply = (redisReply*)redis_command(redis, "SMEMBERS %s", members_key.c_str());
-    if (members_reply && members_reply->type == REDIS_REPLY_ARRAY) {
-        for(size_t i=0;i<members_reply->elements;i++)
-        {
-        string member = members_reply->element[i]->str;
-        int member_fd = find_client_fd_by_name(member);
-        if (member_fd != -1) {
-            send_message(member_fd, notify_msg);
-            store_history(sender,member,notify_msg);
         } else {
-            redis_command(redis, "RPUSH %s %s", ("offline:" + member).c_str(), notify_msg.c_str());
-            store_history(sender,member,notify_msg);
+            cerr<<"对方离线，已存储\n";
+            redis_command(redis, "INCR %s", ("offlinefiles:" + target).c_str());
         }
-        string key="files:"+member;
-        redisCommand(redis_conn,"RPUSH %s %s",key.c_str(),file_id.c_str());
-    }
-    }
-    else {
-        cerr << "获取群成员列表失败: " << members_key << endl;
-    }
-    if (members_reply) freeReplyObject(members_reply);
+        string place = (sender < target) ? sender + ":" + target : target + ":" + sender;
+        store_history(sender, place, notify_msg);
+    } else {
+        // 群聊
+        string members_key = "group:" + target + ":members:";
+        redisReply* members_reply = (redisReply*)redis_command(redis, "SMEMBERS %s", members_key.c_str());
+        if (members_reply && members_reply->type == REDIS_REPLY_ARRAY) {
+            for (size_t i = 0; i < members_reply->elements; ++i) {
+                string member = members_reply->element[i]->str;
+                // 1. 存入每个成员的 files 列表
+                redis_command(redis, "RPUSH %s %s", ("files:" + member).c_str(), notify_msg.c_str());
+                // 2. 发送或离线
+                int member_fd = find_client_fd_by_name(member);
+                if (member_fd != -1) {
+                    send_message(member_fd, notify_msg);
+                } else {
+                    redis_command(redis, "RPUSH %s %s", ("offline:" + member).c_str(), notify_msg.c_str());
+                }
+                // 3. 存储历史（每个成员一条，群聊历史）
+                store_history(sender, member, notify_msg);
+            }
+        }
+        if (members_reply) freeReplyObject(members_reply);
+    
 }
 }
 
@@ -491,6 +420,7 @@ void send_next_chunk(int fd) {
 
 void process(int fd,redisContext*redis,const vector<char>&buf)
 {
+    cerr<<"process"<<endl;
     if (buf.size() < 25) {
     cerr << "Invalid file packet, size="
          << buf.size() << endl;
@@ -599,11 +529,8 @@ cout << "DEBUG: rename result:success"  << endl;
     
       redis_command(redis, "HSET %s status complete", meta_key.c_str());
     redis_command(redis, "DEL %s", progress_key.c_str());
-
-    // 向发送端发送成功确认
     string complete_msg = "UPLOAD_COMPLETE " + file_id + "\n";
     send_message(fd, complete_msg);
-
     cout << "DEBUG: About to call notify_reciver" << endl;
     notify_reciver(redis, file_id);
     cout << "Upload complete, notifying receiver..." << endl;

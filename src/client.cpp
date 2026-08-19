@@ -40,6 +40,8 @@ mutex menu_lock;
 bool menu=true;
 bool send_error_occurred = false;
 mutex error_mtu;
+bool is_upload=false;
+mutex upload_mtu;
 size_t wrong=0;
 void send_menu()
 {
@@ -419,8 +421,9 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
             }
 
             if (server_confirmed)
+            {
                 break;
-
+            }
             continue;
         }
 
@@ -457,6 +460,11 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
         cout << "文件上传成功，总偏移量: "
              << offset
              << endl;
+              {
+                    lock_guard<mutex> lock(upload_mtu);
+                    is_upload=false;
+                }
+                send_menu();
 
     } 
 
@@ -735,10 +743,15 @@ void recv_thread_func() {
                 else if(line=="命令完成"&&logged_in==true)
                 {
                    bool print=false;
+                   {
+                    lock_guard<mutex> lock(upload_mtu);
+                    if(!is_upload)
+                    {
                     {
                         lock_guard<mutex> lock(menu_lock);
                         print=menu;
-                    }
+                    }}
+                }
                     if(print)
                     {
                         send_menu();
@@ -763,7 +776,7 @@ void recv_thread_func() {
            should_close=true;;
                     }
 }
-                else if (line.rfind("UPLOAD_COMPLETE", 0) == 0) {
+                else if (line.rfind("UPLOAD_READY", 0) == 0) {
 
                     cerr << "DEBUG: Received UPLOAD_READY line: ["
                          << line << "]" << endl;
@@ -839,7 +852,7 @@ void recv_thread_func() {
                          << type
                          << ")" << endl;
 
-                    cout << "使用 /download "
+                    cout << "使用 /27 "
                          << file_id
                          << " <保存路径> 下载"
                          << endl;
@@ -1697,7 +1710,13 @@ getline(cin,content);
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "26") 
-            { wrong=0;
+            {
+                {
+                    lock_guard<mutex> lock(upload_mtu);
+                    is_upload=true;
+                }
+                
+                wrong=0;
              
     string target ,filepath;
     cout<<"上传文件,targetname:\n";

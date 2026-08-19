@@ -2680,6 +2680,37 @@ void chaqun(int ufd)
 
 void lixian(int ufd) 
 {
+    string key2="offlinefiles:"+CLIENT(ufd)->username;
+    redisReply*reply2=(redisReply*)redis_command(redis_conn,"GET %s",key2.c_str());
+    if(reply2&&reply2->type==REDIS_REPLY_STRING)
+    {
+        int n=stoi(reply2->str);
+        if(n>0)
+        {
+            string msg="你有 "+to_string(n)+" 个文件待处理\n";
+            send_message(ufd,msg);
+            redis_command(redis_conn,"DEL %s",key2.c_str());
+        }
+
+    }
+    if(reply2)
+    {
+        freeReplyObject(reply2);
+    }
+    string key1="add_firends:"+CLIENT(ufd)->username;
+    redisReply*reply1=(redisReply*)redis_command(redis_conn,"GET %s",key1.c_str());
+    if(reply1&&reply1->type==REDIS_REPLY_STRING)
+    {
+        int n=stoi(reply1->str);
+        if(n>0)
+        {string msg1="你有"+to_string(n)+"条好友申请\n";
+       send_message(ufd,msg1);}
+       redis_command(redis_conn,"DEL %s",key1.c_str());
+    }
+    if(reply1)
+    {
+        freeReplyObject(reply1);
+    }
     string key = "offline:" + CLIENT(ufd)->username;
     redisReply* reply = (redisReply*)redis_command(redis_conn, "LRANGE %s 0 -1", key.c_str());
     if (reply == nullptr) 
@@ -2713,20 +2744,6 @@ void lixian(int ufd)
     }
     freeReplyObject(reply);
     redis_command(redis_conn, "DEL %s", key.c_str());
-    string key1="add_firends:"+CLIENT(ufd)->username;
-    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"GET %s",key1.c_str());
-    if(reply1&&reply1->type==REDIS_REPLY_STRING)
-    {
-        int n=stoi(reply1->str);
-        if(n>0)
-        {string msg1="你有"+to_string(n)+"条好友申请\n";
-       send_message(ufd,msg1);}
-       redis_command(redis_conn,"DEL %s",key1.c_str());
-    }
-    if(reply1)
-    {
-        freeReplyObject(reply1);
-    }
     send_message(ufd, "消息拉取完成\n");
 }
 
@@ -2964,7 +2981,7 @@ void files(int fd)
         return;
     }
     string key="files:"+c.username;
-    redisReply*reply=(redisReply*)redisCommand(redis_conn,"LRANGE %s 0 -1",key.c_str());
+    redisReply*reply=(redisReply*)redis_command(redis_conn,"LRANGE %s 0 -1",key.c_str());
     if(reply&&reply->type==REDIS_REPLY_ARRAY)
     {
         size_t n=reply->elements;
