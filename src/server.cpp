@@ -1633,6 +1633,7 @@ void jiechupinbi(int ufd,const string&name)
     {
         send_message(target_fd,"解除屏蔽成功\n");
     }
+    
     return;
 
 }
@@ -1830,7 +1831,6 @@ void guanli(int ufd,const string&qun1,const string&name)
         send_message(ufd, "网络错误\n");
         return;
     }
-    // 不提前检查类型，直接与 jiesan 一致的处理方式
     if (reply->type != REDIS_REPLY_STRING || string(reply->str) != CLIENT(ufd)->username) {
         send_message(ufd, "不是群主没有权限添加管理员\n");
         freeReplyObject(reply);
@@ -2012,7 +2012,6 @@ void add_group(int ufd, const string& qun) {
     }
     freeReplyObject(reply);
 
-    // 5. 发送申请
     redisReply* reply2 = (redisReply*)redis_command(redis_conn, "SADD %s %s", requests_key.c_str(), CLIENT(ufd)->username.c_str());
     if (!reply2) {
         send_message(ufd, "网络错误\n");
@@ -2023,12 +2022,10 @@ void add_group(int ufd, const string& qun) {
         freeReplyObject(reply2);
         return;
     }
-    freeReplyObject(reply2);  // 释放成功后的 reply2
+    freeReplyObject(reply2);  
 
-    // 6. 给申请者确认反馈
     send_message(ufd, "加群申请已发送，等待群主或管理员审批\n");
 
-    // 7. 通知群主
     reply = (redisReply*)redis_command(redis_conn, "HGET %s owner", group_key.c_str());
     if (reply && reply->type == REDIS_REPLY_STRING) {
         string owner = reply->str;
@@ -2040,7 +2037,6 @@ void add_group(int ufd, const string& qun) {
         if (reply) freeReplyObject(reply);
     }
 
-    // 8. 通知管理员（不包括群主）
     string admins_key = group_key + ":guanli:";
     reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", admins_key.c_str());
     if (reply && reply->type == REDIS_REPLY_ARRAY) {
@@ -2048,7 +2044,7 @@ void add_group(int ufd, const string& qun) {
                             "，请使用 /list_group " + qun + " 查看，并回复 /approve " + qun + " <用户名> 或 /rejectgroup " + qun + " <用户名>\n";
         for (size_t i = 0; i < reply->elements; ++i) {
             string admin = reply->element[i]->str;
-            // 避免重复通知群主（群主已经在上面通知过）
+         
             if (admin != CLIENT(ufd)->username) {
                 xitongbobao(admin, notify_msg);
             }
@@ -2056,7 +2052,6 @@ void add_group(int ufd, const string& qun) {
         freeReplyObject(reply);
     } else {
         if (reply) freeReplyObject(reply);
-        // 没有管理员是正常情况，不报错
     }
 }
 
@@ -3672,7 +3667,9 @@ int main()
                         perror("accept");
                         break;
                     }
-
+                      int heart=1;
+                    setsockopt(client_fd,SOL_SOCKET,SO_KEEPALIVE,&heart,sizeof(heart));
+                    
                     if (set_nonblocking(client_fd) < 0) {
                         perror("set_nonblocking client");
                         close(client_fd);
@@ -3686,7 +3683,6 @@ int main()
                         continue;
                     }
                     SSL_set_fd(ssl, client_fd);
-
                     auto c = make_shared<Client>();
                     c->fd = client_fd;
                     c->generation = next_client_generation.fetch_add(1);

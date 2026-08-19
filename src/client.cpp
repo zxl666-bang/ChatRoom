@@ -664,7 +664,10 @@ void recv_thread_func() {
                         username = user;
                         logged_in = true;
                     }
-
+                     {
+        lock_guard<mutex> lock(error_mtu);
+        send_error_occurred = false;  
+    }
                     std::cout << "登录成功\n";
                     
                  
