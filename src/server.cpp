@@ -13,6 +13,15 @@
 #include <openssl/crypto.h>   // 加密基础函数（可选，但若使用锁回调则需）
 #include <curl/curl.h>
 #include <iostream>
+#include <thread>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <atomic>
+#include <shared_mutex>
+#include <cstdarg>
+#include <algorithm>
 #include <cstring>
 #include <leveldb/options.h>
 #include <sys/types.h>
@@ -36,16 +45,124 @@
 #include "server.h"
 #include "file_transfer.h"
 using namespace std;
+
+class ThreadPool {
+public:
+    explicit ThreadPool(size_t workers, size_t max_queue = 20000)
+        : stopping_(false), max_queue_(max_queue) {
+        workers_.reserve(workers);
+        for (size_t i = 0; i < workers; ++i) {
+            workers_.emplace_back([this] { worker_loop(); });
+        }
+    }
+
+    ~ThreadPool() { stop(); }
+
+    bool enqueue(function<void()> job) {
+        {
+            unique_lock<mutex> lk(mutex_);
+            if (stopping_ || jobs_.size() >= max_queue_) return false;
+            jobs_.emplace_back(std::move(job));
+        }
+        cv_.notify_one();
+        return true;
+    }
+
+    void stop() {
+        {
+            unique_lock<mutex> lk(mutex_);
+            if (stopping_) return;
+            stopping_ = true;
+        }
+        cv_.notify_all();
+        for (auto &t : workers_) if (t.joinable()) t.join();
+        workers_.clear();
+    }
+
+    size_t size() const {
+        lock_guard<mutex> lk(mutex_);
+        return jobs_.size();
+    }
+
+private:
+    void worker_loop() {
+        for (;;) {
+            function<void()> job;
+            {
+                unique_lock<mutex> lk(mutex_);
+                cv_.wait(lk, [this] { return stopping_ || !jobs_.empty(); });
+                if (stopping_ && jobs_.empty()) return;
+                job = std::move(jobs_.front());
+                jobs_.pop_front();
+            }
+            try { job(); }
+            catch (const exception &e) { cerr << "[THREADPOOL] exception: " << e.what() << endl; }
+            catch (...) { cerr << "[THREADPOOL] unknown exception" << endl; }
+        }
+    }
+
+    mutable mutex mutex_;
+    condition_variable cv_;
+    deque<function<void()>> jobs_;
+    vector<thread> workers_;
+    bool stopping_;
+    size_t max_queue_;
+};
+
+static unique_ptr<ThreadPool> g_thread_pool;
+static recursive_mutex redis_mutex;
+static recursive_mutex mysql_mutex;
+static shared_mutex clients_map_mutex;
+static recursive_mutex routing_mutex;
+static atomic<uint64_t> next_client_generation{1};
+static const size_t MAX_SEND_BUFFER = 32ULL * 1024ULL * 1024ULL;
+static const size_t MAX_WRITE_PER_EVENT = 256ULL * 1024ULL;
+
+redisReply* redis_command(redisContext* c, const char* fmt, ...) {
+    if (!c) return nullptr;
+    lock_guard<recursive_mutex> lk(redis_mutex);
+    va_list ap;
+    va_start(ap, fmt);
+    redisReply* reply = static_cast<redisReply*>(redisvCommand(c, fmt, ap));
+    va_end(ap);
+    return reply;
+}
+
+shared_ptr<Client> get_client(int fd) {
+    shared_lock<shared_mutex> lk(clients_map_mutex);
+    auto it = clients.find(fd);
+    if (it == clients.end()) return nullptr;
+    return it->second;
+}
+
+int find_client_fd_by_name(const string& name) {
+    lock_guard<recursive_mutex> lk(routing_mutex);
+    auto it = name_to_fd.find(name);
+    return it == name_to_fd.end() ? -1 : it->second;
+}
+
+#define CLIENT(fd) get_client(fd)
+
+static bool same_client(int fd, const shared_ptr<Client>& c) {
+    shared_lock<shared_mutex> lk(clients_map_mutex);
+    auto it = clients.find(fd);
+    return it != clients.end() && it->second == c;
+}
+
 const int MAX_EVENTS = 64;
 const int PORT = 8888;
 const int FILEPORT=8889;
 leveldb::DB*history_db=nullptr;
-map<int, Client> clients;
+map<int, shared_ptr<Client>> clients;
 set<int> file_client_fds;
 map<string, int> name_to_fd;
 redisContext* redis_conn = nullptr;
 int epoll_fd;
 MYSQL*mysql_conn=nullptr;
+map<string,string>chat;
+mutex chat_mtu;
+map<string,string>chat_group;
+mutex chat_group_mtu;
 string trim(const string& s) 
 {
     size_t start = s.find_first_not_of(" \t\n\r");
@@ -53,18 +170,17 @@ string trim(const string& s)
     size_t end = s.find_last_not_of(" \t\n\r");
     return s.substr(start, end - start + 1);
 }
-ssize_t tls_read(int fd, void* buf, size_t size) 
-{
-    auto it = clients.find(fd);
-    if (it == clients.end() || !it->second.ssl || !it->second.handshak_down) {
-        return -1;
-    }
+ssize_t tls_read(int fd, void* buf, size_t size) {
+    shared_ptr<Client> c = CLIENT(fd);
+    if (!c) return -1;
+    lock_guard<recursive_mutex> lk(*c->state_mutex);
+    if (c->closing.load() || !c->ssl || !c->handshak_down) return -1;
 
     ERR_clear_error();
-    int ret = SSL_read(it->second.ssl, buf, static_cast<int>(size));
+    int ret = SSL_read(c->ssl, buf, static_cast<int>(size));
     if (ret > 0) return ret;
 
-    int err = SSL_get_error(it->second.ssl, ret);
+    int err = SSL_get_error(c->ssl, ret);
     if (err == SSL_ERROR_WANT_READ) return -2;
     if (err == SSL_ERROR_WANT_WRITE) return -3;
     if (err == SSL_ERROR_ZERO_RETURN) return 0;
@@ -76,16 +192,16 @@ ssize_t tls_read(int fd, void* buf, size_t size)
 }
 
 ssize_t tls_write(int fd, const void* buf, size_t size) {
-    auto it = clients.find(fd);
-    if (it == clients.end() || !it->second.ssl || !it->second.handshak_down) {
-        return -1;
-    }
+    shared_ptr<Client> c = CLIENT(fd);
+    if (!c) return -1;
+    lock_guard<recursive_mutex> lk(*c->state_mutex);
+    if (c->closing.load() || !c->ssl || !c->handshak_down) return -1;
 
     ERR_clear_error();
-    int ret = SSL_write(it->second.ssl, buf, static_cast<int>(size));
+    int ret = SSL_write(c->ssl, buf, static_cast<int>(size));
     if (ret > 0) return ret;
 
-    int err = SSL_get_error(it->second.ssl, ret);
+    int err = SSL_get_error(c->ssl, ret);
     if (err == SSL_ERROR_WANT_READ) return -2;
     if (err == SSL_ERROR_WANT_WRITE) return -3;
     if (err == SSL_ERROR_ZERO_RETURN) return 0;
@@ -95,148 +211,140 @@ ssize_t tls_write(int fd, const void* buf, size_t size) {
     return -1;
 }
 
+
 void close_connection(int fd) {
-    if (clients.find(fd) == clients.end()) return;
-    Client& c = clients[fd];
-    if (c.logged_in && !c.username.empty()) {
-        redisCommand(redis_conn, "DEL %s",("online:"+clients[fd].username).c_str());
-        name_to_fd.erase(c.username);
+    shared_ptr<Client> c = CLIENT(fd);
+    if (!c) return;
+
+    if (c->closing.exchange(true)) return;
+
+    string username;
+    bool logged_in = false;
+    {
+        lock_guard<recursive_mutex> client_lock(*c->state_mutex);
+        username = c->username;
+        logged_in = c->logged_in;
+    }
+
+    if (logged_in && !username.empty()) {
+        redis_command(redis_conn, "DEL %s", ("online:" + username).c_str());
+        lock_guard<recursive_mutex> route_lock(routing_mutex);
+        auto rit = name_to_fd.find(username);
+        if (rit != name_to_fd.end() && rit->second == fd) {
+            name_to_fd.erase(rit);
+        }
     }
 
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
 
-    if (file_client_fds.find(fd) != file_client_fds.end()) {
-        file_client_fds.erase(fd);
+    bool is_file_client = false;
+    {
+        lock_guard<recursive_mutex> file_lock(file_mutex);
+        auto fit = file_client_fds.find(fd);
+        if (fit != file_client_fds.end()) {
+            file_client_fds.erase(fit);
+            is_file_client = true;
+        }
+    }
+
+    if (is_file_client) {
+        // on_file_connection() takes file_mutex itself. Do not call it while
+        // holding file_mutex.
         on_file_connection(fd, false);
     }
 
-    // 4. 释放 SSL
-    if (c.ssl) {
-        SSL_shutdown(c.ssl);
-        SSL_free(c.ssl);
-        c.ssl = nullptr;
+    {
+        lock_guard<recursive_mutex> io_lock(*c->io_mutex);
+        lock_guard<recursive_mutex> client_lock(*c->state_mutex);
+        if (c->ssl) {
+            SSL_shutdown(c->ssl);
+            SSL_free(c->ssl);
+            c->ssl = nullptr;
+        }
     }
-
-    // 5. 关闭 socket
+   {
+    lock_guard<mutex> lock(chat_mtu);
+    chat.erase(username);
+}
+{
+    lock_guard<mutex> lock(chat_group_mtu);
+   chat_group.erase(username);
+}
     close(fd);
 
-    // 6. 从 clients 删除
-    clients.erase(fd);
+    {
+        unique_lock<shared_mutex> lk(clients_map_mutex);
+        auto it = clients.find(fd);
+        if (it != clients.end() && it->second == c) {
+            clients.erase(it);
+        }
+    }
 }
 
 
-
 void flush_send_buffer(int fd) {
-    if (clients.find(fd) == clients.end()) return;
-    Client& c = clients[fd];
-    if (c.send_buffer.empty()) {
-        // 缓冲区空，可禁用写事件（但保留读事件）
-        struct epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = fd;
-        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
-        return;
-    }
+    shared_ptr<Client> c = CLIENT(fd);
+    if (!c) return;
+    lock_guard<recursive_mutex> state_lock(*c->state_mutex);
+    lock_guard<recursive_mutex> send_lock(*c->send_mutex);
+    if (c->closing.load() || !c->ssl || !c->handshak_down) return;
 
-    const char* data = c.send_buffer.data() + c.send_offset;
-    size_t remain = c.send_buffer.size() - c.send_offset;
-
-    while (remain > 0) {
-       cerr << "[FLUSH] fd="
-     << fd
-     << " remain="
-     << remain
-     << endl;
-
-int n = tls_write(fd, data, remain);
-
-cerr << "[FLUSH] tls_write returned "
-     << n
-     << endl;
+    size_t budget = MAX_WRITE_PER_EVENT;
+    while (budget > 0 && c->send_offset < c->send_buffer.size()) {
+        const char* data = c->send_buffer.data() + c->send_offset;
+        size_t remain = min(c->send_buffer.size() - c->send_offset, budget);
+        ssize_t n = tls_write(fd, data, remain);
         if (n > 0) {
-            c.send_offset += n;
-            remain -= n;
-            data += n;
-        } 
-        else if(n==-2 || n==-3)
-        {
-            struct epoll_event ev{};
+            c->send_offset += static_cast<size_t>(n);
+            budget -= static_cast<size_t>(n);
+            continue;
+        }
+        if (n == -2 || n == -3) {
+            epoll_event ev{};
             ev.events = EPOLLIN | EPOLLOUT;
             ev.data.fd = fd;
             epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
             return;
         }
-        else 
-        {
-            cerr << "SSL_write error: " << ERR_reason_error_string(ERR_get_error()) << endl;
+        close_connection(fd);
+        return;
+    }
+
+    if (c->send_offset == c->send_buffer.size()) {
+        c->send_buffer.clear();
+        c->send_offset = 0;
+    }
+
+    epoll_event ev{};
+    ev.data.fd = fd;
+    ev.events = EPOLLIN;
+    if (c->send_offset < c->send_buffer.size()) ev.events |= EPOLLOUT;
+    epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+}
+
+
+void send_message(int fd, const string& msg) {
+    shared_ptr<Client> c = CLIENT(fd);
+    if (!c || msg.empty()) return;
+    {
+        lock_guard<recursive_mutex> lk(*c->send_mutex);
+        if (c->closing.load()) return;
+        if (c->send_buffer.size() + msg.size() > MAX_SEND_BUFFER) {
+            cerr << "[SEND] slow client fd=" << fd << " exceeded "
+                 << MAX_SEND_BUFFER << " bytes, closing" << endl;
+            // close_connection is recursive-safe for this client.
             close_connection(fd);
             return;
         }
+        c->send_buffer.append(msg);
     }
 
-    // 全部发送完毕，清空缓冲区
-    c.send_buffer.clear();
-    c.send_offset = 0;
-    // 禁用写事件
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
+    epoll_event ev{};
+    ev.events = EPOLLIN | EPOLLOUT;
     ev.data.fd = fd;
     epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 }
 
-void send_message(int fd, const string& msg) {
-
-    cerr << "\n========== send_message ==========\n";
-    cerr << "fd = " << fd << endl;
-    cerr << "msg = [" << msg << "]" << endl;
-
-    auto it = clients.find(fd);
-
-    if (it == clients.end()) {
-        cerr << "ERROR: fd not found in clients"
-             << endl;
-        return;
-    }
-
-    cerr << "username = ["
-         << it->second.username
-         << "]"
-         << endl;
-
-    cerr << "logged_in = "
-         << it->second.logged_in
-         << endl;
-
-    cerr << "ssl = "
-         << it->second.ssl
-         << endl;
-
-    cerr << "handshake = "
-         << it->second.handshak_down
-         << endl;
-
-    if (!it->second.ssl ||
-        !it->second.handshak_down) {
-
-        cerr << "ERROR: TLS not ready"
-             << endl;
-
-        return;
-    }
-
-    it->second.send_buffer.append(msg);
-
-    cerr << "send_buffer size = "
-         << it->second.send_buffer.size()
-         << endl;
-
-    flush_send_buffer(fd);
-
-    cerr << "flush_send_buffer finished"
-         << endl;
-
-    cerr << "==================================\n";
-}
 
 bool init_mysql()
 {
@@ -265,6 +373,7 @@ bool init_mysql()
 
 vector<vector<string>>excute_select(const string&sql,const vector<string>&param={})
 {
+    lock_guard<recursive_mutex> mysql_lock(mysql_mutex);
     if (mysql_conn == nullptr) {
     cerr << "MySQL connection not initialized" << endl;
     return {}; // 或 return -1;
@@ -363,6 +472,7 @@ vector<vector<string>>excute_select(const string&sql,const vector<string>&param=
 
 int64_t excute_updata(const string&sql,const vector<string>&param={})
 {
+    lock_guard<recursive_mutex> mysql_lock(mysql_mutex);
     if (mysql_conn == nullptr) {
     cerr << "MySQL connection not initialized" << endl;
     return -1;
@@ -492,7 +602,7 @@ void store_history(const string& sender,
 
 bool user_exists2(const string& username) {
     string key = "user:" + username;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", key.c_str());
     if (reply == nullptr) return false;
     bool exists = (reply->type == REDIS_REPLY_INTEGER && reply->integer == 1);
     freeReplyObject(reply);
@@ -526,7 +636,7 @@ void GET_CAPTCHA(int ufd,const string&email)
         return;
     }
     string key1="captcha:limit:"+email;
-    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"GET %s",key1.c_str());
+    redisReply*reply1=(redisReply*)redis_command(redis_conn,"GET %s",key1.c_str());
     if(!reply1)
     {
         send_message(ufd,"网不好\n");
@@ -541,7 +651,7 @@ void GET_CAPTCHA(int ufd,const string&email)
     freeReplyObject(reply1);
    string code=generat_captcha();
    string key2="captcha:code:"+email;
-   redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SET %s %s EX 300",key2.c_str(),code.c_str());
+   redisReply*reply2=(redisReply*)redis_command(redis_conn,"SET %s %s EX 300",key2.c_str(),code.c_str());
    if(!reply2||reply2->type!=REDIS_REPLY_STATUS||strcmp(reply2->str,"OK")!=0)
    {
     send_message(ufd,"验证码设置失败\n");
@@ -553,7 +663,7 @@ void GET_CAPTCHA(int ufd,const string&email)
    }
    freeReplyObject(reply2);
    string key3="captcha:limit:"+email;
-   redisCommand(redis_conn,"SET %s 1 EX 60",key3.c_str());
+   redis_command(redis_conn,"SET %s 1 EX 60",key3.c_str());
    bool send_successe=send_email(email,"验证码","你的验证码是: "+code);
    if(send_successe)
    {
@@ -570,7 +680,7 @@ void GET_CAPTCHA(int ufd,const string&email)
 
 bool is_email2(const string& username, const string& email) {
     string key = "user:" + username;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "HGET %s email", key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "HGET %s email", key.c_str());
     if (!reply || reply->type != REDIS_REPLY_STRING) {
         if (reply) freeReplyObject(reply);
         return false;
@@ -585,7 +695,7 @@ bool verify_captcha(int ufd,const string&email,const string&code)
    cout << "verify_captcha: email = " << email << endl;
    cout << "verify_captcha: key = " << "captcha:code:" + email << endl;
     string key1="captcha:code:"+email;
-    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"GET %s",key1.c_str());
+    redisReply*reply1=(redisReply*)redis_command(redis_conn,"GET %s",key1.c_str());
     if(!reply1)
     {
         send_message(ufd,"网不好\n");
@@ -605,7 +715,7 @@ bool verify_captcha(int ufd,const string&email,const string&code)
     {
          send_message(ufd,"验证码正确\n");
          freeReplyObject(reply1);
-         redisCommand(redis_conn,"DEL %s",key1.c_str());
+         redis_command(redis_conn,"DEL %s",key1.c_str());
          return true;
     }
     send_message(ufd,"验证码错误\n");
@@ -654,7 +764,7 @@ void zhuxiao(int fd, const string& name, const string& password) {
         delete it;
 
         string groups_key = "user:" + name + ":groups:";
-        redisReply* reply_groups = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", groups_key.c_str());
+        redisReply* reply_groups = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", groups_key.c_str());
         if (reply_groups && reply_groups->type == REDIS_REPLY_ARRAY) {
             leveldb::Iterator* it2 = history_db->NewIterator(ro);
             for (size_t i = 0; i < reply_groups->elements; ++i) {
@@ -682,49 +792,49 @@ void zhuxiao(int fd, const string& name, const string& password) {
     }
 
     string friends_key = "friends:" + name;
-    redisReply* reply_friends = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", friends_key.c_str());
+    redisReply* reply_friends = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", friends_key.c_str());
     if (reply_friends && reply_friends->type == REDIS_REPLY_ARRAY) {
         for (size_t i = 0; i < reply_friends->elements; ++i) {
             string friend_name = reply_friends->element[i]->str;
             string key = "friends:" + friend_name;
-            redisCommand(redis_conn, "SREM %s %s", key.c_str(), name.c_str());
+            redis_command(redis_conn, "SREM %s %s", key.c_str(), name.c_str());
         }
         freeReplyObject(reply_friends);
     } else if (reply_friends) {
         freeReplyObject(reply_friends);
     }
-    redisCommand(redis_conn, "DEL %s", friends_key.c_str());
+    redis_command(redis_conn, "DEL %s", friends_key.c_str());
     send_message(fd, "好友列表已清空\n");
 
     string groups_key2 = "user:" + name + ":groups:";
-    redisReply* reply_groups2 = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", groups_key2.c_str());
+    redisReply* reply_groups2 = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", groups_key2.c_str());
     if (reply_groups2 && reply_groups2->type == REDIS_REPLY_ARRAY) {
         for (size_t i = 0; i < reply_groups2->elements; ++i) {
             string group_name = reply_groups2->element[i]->str;
             string group_owner="group:"+group_name;
             string members_key = "group:" + group_name + ":members:";
-            redisCommand(redis_conn, "SREM %s %s", members_key.c_str(), name.c_str());
+            redis_command(redis_conn, "SREM %s %s", members_key.c_str(), name.c_str());
             string admin_key = "group:" + group_name + ":guanli:";
-            redisCommand(redis_conn, "SREM %s %s", admin_key.c_str(), name.c_str());
-            redisReply*reply=(redisReply*)redisCommand(redis_conn,"HGET %s owner",group_owner.c_str());
+            redis_command(redis_conn, "SREM %s %s", admin_key.c_str(), name.c_str());
+            redisReply*reply=(redisReply*)redis_command(redis_conn,"HGET %s owner",group_owner.c_str());
             if(reply&&reply->type==REDIS_REPLY_STRING&&string(reply->str)==name)
             {
-                 redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SMEMBERS %s",members_key.c_str());
+                 redisReply*reply2=(redisReply*)redis_command(redis_conn,"SMEMBERS %s",members_key.c_str());
                  if(reply2&&reply2->type==REDIS_REPLY_ARRAY)
                  {
                     for(size_t j=0;j<reply2->elements;j++)
                     {
                         string group="user:"+string(reply2->element[j]->str)+":groups:";
-                        redisCommand(redis_conn,"SREM %s %s",group.c_str(),group_name.c_str());
+                        redis_command(redis_conn,"SREM %s %s",group.c_str(),group_name.c_str());
                     }
                  }
                  if(reply2)
                  {
                     freeReplyObject(reply2);
                  }
-                 redisCommand(redis_conn, "DEL %s", ("group:" + group_name + ":members:").c_str());
-                 redisCommand(redis_conn, "DEL %s", ("group:" + group_name + ":guanli:").c_str());
-                redisCommand(redis_conn,"DEL %s",("group:"+group_name).c_str());
+                 redis_command(redis_conn, "DEL %s", ("group:" + group_name + ":members:").c_str());
+                 redis_command(redis_conn, "DEL %s", ("group:" + group_name + ":guanli:").c_str());
+                redis_command(redis_conn,"DEL %s",("group:"+group_name).c_str());
             }
             if(reply)
             {
@@ -735,28 +845,28 @@ void zhuxiao(int fd, const string& name, const string& password) {
     } else if (reply_groups2) {
         freeReplyObject(reply_groups2);
     }
-    redisCommand(redis_conn, "DEL %s", groups_key2.c_str());
+    redis_command(redis_conn, "DEL %s", groups_key2.c_str());
     send_message(fd, "群组关系已清空\n");
 
-    redisCommand(redis_conn, "DEL %s", ("user:" + name).c_str());
-    redisCommand(redis_conn, "DEL %s", ("blocklist:" + name).c_str());
-    redisCommand(redis_conn, "DEL %s", ("haoyoushenqing:" + name).c_str());
-    redisCommand(redis_conn, "DEL %s", ("online:" + name).c_str());
-    redisCommand(redis_conn, "DEL %s", ("offline:" + name).c_str());
+    redis_command(redis_conn, "DEL %s", ("user:" + name).c_str());
+    redis_command(redis_conn, "DEL %s", ("blocklist:" + name).c_str());
+    redis_command(redis_conn, "DEL %s", ("haoyoushenqing:" + name).c_str());
+    redis_command(redis_conn, "DEL %s", ("online:" + name).c_str());
+    redis_command(redis_conn, "DEL %s", ("offline:" + name).c_str());
 
     string sql_email = "SELECT email FROM users WHERE username = ?";
     auto res_email = excute_select(sql_email, {name});
     if (!res_email.empty()) {
         string email_key = "email:" + res_email[0][0];
-        redisCommand(redis_conn, "DEL %s", email_key.c_str());
+        redis_command(redis_conn, "DEL %s", email_key.c_str());
     }
 
     vector<string> patterns = {"unread:" + name + ":*", "unread_size:" + name + ":*"};
     for (const string& pat : patterns) {
-        redisReply* r = (redisReply*)redisCommand(redis_conn, "KEYS %s", pat.c_str());
+        redisReply* r = (redisReply*)redis_command(redis_conn, "KEYS %s", pat.c_str());
         if (r && r->type == REDIS_REPLY_ARRAY) {
             for (size_t i = 0; i < r->elements; ++i) {
-                redisCommand(redis_conn, "DEL %s", r->element[i]->str);
+                redis_command(redis_conn, "DEL %s", r->element[i]->str);
             }
             freeReplyObject(r);
         } else if (r) {
@@ -768,7 +878,7 @@ void zhuxiao(int fd, const string& name, const string& password) {
     string sql_del = "DELETE FROM users WHERE username = ?";
     int64_t rows = excute_updata(sql_del, {name}); 
     int ufd=-1;
-    ufd=name_to_fd[name];
+    { lock_guard<recursive_mutex> lk(routing_mutex); auto it = name_to_fd.find(name); ufd = (it == name_to_fd.end() ? -1 : it->second); }
     if (rows == 1) {
         send_message(fd, "注销成功，账户已删除\n");
         if(ufd!=-1)
@@ -783,20 +893,24 @@ void zhuxiao(int fd, const string& name, const string& password) {
 void broadcast(int sender_fd, const string& msg)
  {
     vector<int> fds;
-    fds.reserve(clients.size());
-    for (const auto& pair : clients) {
-        if (pair.first != sender_fd && pair.second.logged_in)
-            fds.push_back(pair.first);
+    {
+        shared_lock<shared_mutex> lk(clients_map_mutex);
+        fds.reserve(clients.size());
+        for (const auto& pair : clients) {
+            if (pair.first == sender_fd || !pair.second) continue;
+            lock_guard<recursive_mutex> client_lock(*pair.second->state_mutex);
+            if (!pair.second->closing.load() && pair.second->logged_in)
+                fds.push_back(pair.first);
+        }
     }
-    for (int fd : fds) {
-        send_message(fd, msg);
-    }
+    for (int fd : fds) send_message(fd, msg);
 }
+
 
 void send_unreadsize(const string&key,const string&sender,const string&target)
 {
     cerr << "send_unreadsize: key=" << key << endl;
-redisReply* reply = (redisReply*)redisCommand(redis_conn, "GET %s", key.c_str());
+redisReply* reply = (redisReply*)redis_command(redis_conn, "GET %s", key.c_str());
 if (reply) {
     cerr << "GET reply type=" << reply->type << ", str=" << (reply->str ? reply->str : "null") << endl;
 }
@@ -913,7 +1027,7 @@ void findpassword1(int fd,const string&name,const string&email,const string&code
 bool authenticate1(int ufd, const string& username, const string& password_hash, const string& email, const string& code) {
     // 1. 验证密码
     string key = "user:" + username;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "HGET %s password", key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "HGET %s password", key.c_str());
     if (!reply || reply->type != REDIS_REPLY_STRING) {
         if (reply) freeReplyObject(reply);
         return false;
@@ -949,7 +1063,7 @@ void findpassword2(int ufd,const string&name,const string&email,const string&cod
     if(verify_captcha(ufd,email,code))
     {
         string key1="user:"+name;
-       redisReply*reply2=(redisReply*)redisCommand(redis_conn,"HSET %s password %s",key1.c_str(),password.c_str());
+       redisReply*reply2=(redisReply*)redis_command(redis_conn,"HSET %s password %s",key1.c_str(),password.c_str());
        if(!reply2||reply2->type!=REDIS_REPLY_INTEGER)
        {
         send_message(ufd,"设置新密码失败\n");
@@ -972,13 +1086,13 @@ void findpassword2(int ufd,const string&name,const string&email,const string&cod
 void set_online(const string& username) 
 {
     string key = "online:" + username;
-    redisCommand(redis_conn, "SET %s 1 EX 60", key.c_str());
+    redis_command(redis_conn, "SET %s 1 EX 60", key.c_str());
 }
 
 bool is_online(const string& username) 
 {
     string key = "online:" + username;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", key.c_str());
     if (reply == nullptr) return false;
     bool online = (reply->type == REDIS_REPLY_INTEGER && reply->integer == 1);
     freeReplyObject(reply);
@@ -1027,9 +1141,9 @@ bool login2(int fd,const string&name,const string&password)
     
         if(res[0][0]==password)
         {
-             clients[fd].logged_in = true;
-              clients[fd].username = name;
-             name_to_fd[name] = fd;
+             CLIENT(fd)->logged_in = true;
+              CLIENT(fd)->username = name;
+             { lock_guard<recursive_mutex> lk(routing_mutex); name_to_fd[name] = fd; }
             return true;
         }
         send_message(fd,"密码错误\n");
@@ -1039,30 +1153,30 @@ void refresh_online(const string& username) {
     if (!username.empty())
      {
         string key = "online:" + username;
-        redisCommand(redis_conn, "EXPIRE %s 60", key.c_str());
+        redis_command(redis_conn, "EXPIRE %s 60", key.c_str());
     }
 }
 
 void xitongbobao(const string&name,const string&msg)
 {
-    auto it=name_to_fd.find(name);
-    if(it!=name_to_fd.end())
+    int target_fd = -1;
     {
-        send_message(it->second,msg);
-        return;
+        lock_guard<recursive_mutex> lk(routing_mutex);
+        auto it = name_to_fd.find(name);
+        if (it != name_to_fd.end()) target_fd = it->second;
     }
-    else
-    {
-        string key="offline:"+name;
-        redisCommand(redis_conn,"RPUSH %s %s",key.c_str(),msg.c_str());
-        return;
+    if (target_fd != -1) {
+        send_message(target_fd, msg);
+    } else {
+        redis_command(redis_conn,"RPUSH %s %s",("offline:"+name).c_str(),msg.c_str());
     }
 }
+
 
 bool is_friend(const string& user, const string& target)
  {
     string key = "friends:" + user;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "SISMEMBER %s %s", key.c_str(), target.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "SISMEMBER %s %s", key.c_str(), target.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_INTEGER) 
     {
         if (reply) freeReplyObject(reply);
@@ -1080,17 +1194,17 @@ void get_hisory(int ufd,const string&target)
         cerr<<"历史数据未初始化"<<endl;
         return;
     }
-    if(clients[ufd].logged_in==false)
+    if(CLIENT(ufd)->logged_in==false)
     {
         send_message(ufd,"先登录\n");
         return;
     }
     bool firend=true;
-    if(is_friend(clients[ufd].username,target)==false)
+    if(is_friend(CLIENT(ufd)->username,target)==false)
     {
         firend=false;
-        string key="user:"+clients[ufd].username+":groups:";
-        redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",key.c_str(),target.c_str());
+        string key="user:"+CLIENT(ufd)->username+":groups:";
+        redisReply*reply1=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key.c_str(),target.c_str());
         if(!reply1||reply1->type!=REDIS_REPLY_INTEGER||reply1->integer==0)
         {
             send_message(ufd,"不是好友也不是群成员无法查询历史记录\n");
@@ -1102,7 +1216,7 @@ void get_hisory(int ufd,const string&target)
   string value="history:";
   if(firend)
   {
-    value+=(clients[ufd].username<target)?clients[ufd].username+":"+target+":":target+":"+clients[ufd].username+":";
+    value+=(CLIENT(ufd)->username<target)?CLIENT(ufd)->username+":"+target+":":target+":"+CLIENT(ufd)->username+":";
   }
   else
   {
@@ -1145,8 +1259,8 @@ void get_hisory(int ufd,const string&target)
 
 void addfirends(int fd,const string &target)
 {
-    Client&c=clients[fd];
-   if(clients[fd].logged_in==false)
+    Client&c=*CLIENT(fd);
+   if(CLIENT(fd)->logged_in==false)
    {
     send_message(fd,"先登录\n");
    }
@@ -1165,8 +1279,8 @@ void addfirends(int fd,const string &target)
         send_message(fd,"已经是好友\n");
         return;
      }
-     string key1="haoyoushenqing:"+clients[fd].username;
-     redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",key1.c_str(),target.c_str());
+     string key1="haoyoushenqing:"+CLIENT(fd)->username;
+     redisReply*reply1=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key1.c_str(),target.c_str());
      if (reply1 && reply1->type == REDIS_REPLY_INTEGER && reply1->integer == 1)
 {
     send_message(fd, "对方已经发送了申请\n");
@@ -1175,7 +1289,7 @@ void addfirends(int fd,const string &target)
 }
      freeReplyObject(reply1);
      string key2="haoyoushenqing:"+target;
-     redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SADD %s %s",key2.c_str(),clients[fd].username.c_str());
+     redisReply*reply2=(redisReply*)redis_command(redis_conn,"SADD %s %s",key2.c_str(),CLIENT(fd)->username.c_str());
     if (reply2 && reply2->type == REDIS_REPLY_INTEGER)
      {
         send_message(fd, (reply2->integer == 1) ? "发送好友申请成功\n" : "网不好");
@@ -1186,20 +1300,20 @@ void addfirends(int fd,const string &target)
     }
     if (reply2) 
     freeReplyObject(reply2);
-     string msg=clients[fd].username+"发来好友申请,用'/list_request'查看,并回复'/accept name'或者'/reject name'"+'\n';
+     string msg=CLIENT(fd)->username+"发来好友申请,用'/list_request'查看,并回复'/accept name'或者'/reject name'"+'\n';
      xitongbobao(target,msg);
      return;
 }
 
 void list_firends_requests(int ufd)
 {
-     if(clients[ufd].logged_in==false)
+     if(CLIENT(ufd)->logged_in==false)
      {
         send_message(ufd,"先登录\n");
         return;
      }
-     string key1="haoyoushenqing:"+clients[ufd].username;
-     redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SMEMBERS %s",key1.c_str());
+     string key1="haoyoushenqing:"+CLIENT(ufd)->username;
+     redisReply*reply1=(redisReply*)redis_command(redis_conn,"SMEMBERS %s",key1.c_str());
      if(reply1==nullptr)
      {
      
@@ -1229,16 +1343,16 @@ void list_firends_requests(int ufd)
 }
 
 void accept_friends(int ufd, const string& name) {
-    if (!clients[ufd].logged_in) {
+    if (!CLIENT(ufd)->logged_in) {
         send_message(ufd, "请先登录\n");
         return;
     }
 
-    string current_user = clients[ufd].username;
+    string current_user = CLIENT(ufd)->username;
     string request_key = "haoyoushenqing:" + current_user;
 
     // 1. 验证申请是否存在
-    redisReply* reply1 = (redisReply*)redisCommand(redis_conn, "SISMEMBER %s %s", request_key.c_str(), name.c_str());
+    redisReply* reply1 = (redisReply*)redis_command(redis_conn, "SISMEMBER %s %s", request_key.c_str(), name.c_str());
     if (!reply1 || reply1->type != REDIS_REPLY_INTEGER || reply1->integer != 1) {
         send_message(ufd, "没有来自 " + name + " 的好友申请\n");
         if (reply1) freeReplyObject(reply1);
@@ -1247,7 +1361,7 @@ void accept_friends(int ufd, const string& name) {
     freeReplyObject(reply1);
 
     // 2. 从申请列表移除
-    redisReply* reply2 = (redisReply*)redisCommand(redis_conn, "SREM %s %s", request_key.c_str(), name.c_str());
+    redisReply* reply2 = (redisReply*)redis_command(redis_conn, "SREM %s %s", request_key.c_str(), name.c_str());
     if (!reply2 || reply2->type != REDIS_REPLY_INTEGER || reply2->integer != 1) {
         send_message(ufd, "移除申请失败\n");
         if (reply2) freeReplyObject(reply2);
@@ -1259,25 +1373,25 @@ void accept_friends(int ufd, const string& name) {
     string friends_self = "friends:" + current_user;
     string friends_target = "friends:" + name;
 
-    redisReply* reply3 = (redisReply*)redisCommand(redis_conn, "SADD %s %s", friends_self.c_str(), name.c_str());
+    redisReply* reply3 = (redisReply*)redis_command(redis_conn, "SADD %s %s", friends_self.c_str(), name.c_str());
     if (!reply3 || reply3->type != REDIS_REPLY_INTEGER) {
         send_message(ufd, "添加好友失败（本地列表）\n");
         if (reply3) freeReplyObject(reply3);
         // 回滚：恢复申请（因为已经删除了）
-        redisCommand(redis_conn, "SADD %s %s", request_key.c_str(), name.c_str());
+        redis_command(redis_conn, "SADD %s %s", request_key.c_str(), name.c_str());
         return;
     }
     freeReplyObject(reply3);
 
-    redisReply* reply4 = (redisReply*)redisCommand(redis_conn, "SADD %s %s", friends_target.c_str(), current_user.c_str());
+    redisReply* reply4 = (redisReply*)redis_command(redis_conn, "SADD %s %s", friends_target.c_str(), current_user.c_str());
     if (!reply4 || reply4->type != REDIS_REPLY_INTEGER || reply4->integer != 1) 
     {
         send_message(ufd, "添加好友失败（对方列表）\n");
         if (reply4) freeReplyObject(reply4);
         // 回滚：从当前用户的好友列表中移除对方
-        redisCommand(redis_conn, "SREM %s %s", friends_self.c_str(), name.c_str());
+        redis_command(redis_conn, "SREM %s %s", friends_self.c_str(), name.c_str());
         // 恢复申请
-        redisCommand(redis_conn, "SADD %s %s", request_key.c_str(), name.c_str());
+        redis_command(redis_conn, "SADD %s %s", request_key.c_str(), name.c_str());
         return;
     }
     freeReplyObject(reply4);
@@ -1288,13 +1402,13 @@ void accept_friends(int ufd, const string& name) {
 
 void reject_friends(int ufd, const string&name)
 {
-    if(clients[ufd].logged_in==false)
+    if(CLIENT(ufd)->logged_in==false)
     {
         send_message(ufd,"先登录\n");
            return;
     }
-    string key1="haoyoushenqing:"+clients[ufd].username;
-    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",key1.c_str(),name.c_str());
+    string key1="haoyoushenqing:"+CLIENT(ufd)->username;
+    redisReply*reply1=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key1.c_str(),name.c_str());
     if(reply1==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -1307,7 +1421,7 @@ void reject_friends(int ufd, const string&name)
     return;
    }
    freeReplyObject(reply1);
-   redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SREM %s %s",key1.c_str(),name.c_str());
+   redisReply*reply2=(redisReply*)redis_command(redis_conn,"SREM %s %s",key1.c_str(),name.c_str());
    if(reply2==nullptr)
    {
     send_message(ufd,"网不好\n");
@@ -1320,21 +1434,21 @@ void reject_friends(int ufd, const string&name)
    else
    {
     send_message(ufd,"拒绝"+name+"好友申请成功\n");
-    xitongbobao(name,clients[ufd].username+"拒绝你的好友申请\n");
+    xitongbobao(name,CLIENT(ufd)->username+"拒绝你的好友申请\n");
    }
    freeReplyObject(reply2);
    return;
 }
 void del_friend(int fd, const string& target) 
 {
-    Client& c = clients[fd];
+    Client& c = *CLIENT(fd);
     if (!c.logged_in) 
     { 
         send_message(fd, "请先登录\n");
          return; 
     }
     string key = "friends:" + c.username;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "SREM %s %s", key.c_str(), target.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "SREM %s %s", key.c_str(), target.c_str());
    
     if(!reply||reply->type!=REDIS_REPLY_INTEGER||reply->integer!=1)
     {
@@ -1351,7 +1465,7 @@ void del_friend(int fd, const string& target)
     }
     freeReplyObject(reply);
       string key1="friends:"+target;
-       redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SREM %s %s",key1.c_str(),c.username.c_str());
+       redisReply*reply1=(redisReply*)redis_command(redis_conn,"SREM %s %s",key1.c_str(),c.username.c_str());
     if(!reply1||reply1->type!=REDIS_REPLY_INTEGER||reply1->integer!=1)
     {
         send_message(fd,"删除失败\n");
@@ -1359,7 +1473,7 @@ void del_friend(int fd, const string& target)
         {
             freeReplyObject(reply1);
         }
-        redisCommand(redis_conn,"SADD %s %s",key.c_str(),target.c_str());
+        redis_command(redis_conn,"SADD %s %s",key.c_str(),target.c_str());
         return;
     }
     freeReplyObject(reply1);
@@ -1370,14 +1484,14 @@ void del_friend(int fd, const string& target)
 
 void list_friends(int fd) 
 {
-    Client& c = clients[fd];
+    Client& c = *CLIENT(fd);
     if (!c.logged_in) 
     {
          send_message(fd, "请先登录\n");
          return; 
      }
     string key = "friends:" + c.username;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", key.c_str());
     if (reply && reply->type == REDIS_REPLY_ARRAY)
      {
         string res = "好友: ";
@@ -1401,7 +1515,7 @@ void list_friends(int fd)
             }
             res+="    未读消息：";
              string key1="unread_size:"+ c.username+":"+reply->element[i]->str;
-             redisReply*unread=(redisReply*)redisCommand(redis_conn,"GET %s",key1.c_str());
+             redisReply*unread=(redisReply*)redis_command(redis_conn,"GET %s",key1.c_str());
              if(unread&&unread->type==REDIS_REPLY_STRING)
              {
                 res+=string(unread->str);
@@ -1428,18 +1542,18 @@ void list_friends(int fd)
 
 void pingbi(int ufd,const string&name)
 {
-    if(clients[ufd].logged_in==false)
+    if(CLIENT(ufd)->logged_in==false)
     {
         send_message(ufd,"先登录\n");
         return;
     }
-    if(!is_friend(clients[ufd].username,name))
+    if(!is_friend(CLIENT(ufd)->username,name))
     {
        send_message(ufd,"你们不是好友\n");
        return;
     }
-    string key1="blocklist:"+clients[ufd].username;
-    redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",key1.c_str(),name.c_str());
+    string key1="blocklist:"+CLIENT(ufd)->username;
+    redisReply*reply2=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key1.c_str(),name.c_str());
     if(reply2==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -1458,7 +1572,7 @@ void pingbi(int ufd,const string&name)
         return;
     }
     freeReplyObject(reply2);
-    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SADD %s %s",key1.c_str(),name.c_str());
+    redisReply*reply1=(redisReply*)redis_command(redis_conn,"SADD %s %s",key1.c_str(),name.c_str());
     if(!reply1||reply1->type!=REDIS_REPLY_INTEGER||reply1->integer!=1)
     {
         send_message(ufd,"屏蔽失败\n");
@@ -1478,13 +1592,13 @@ void pingbi(int ufd,const string&name)
 
 void jiechupinbi(int ufd,const string&name)
 {
-    if(clients[ufd].logged_in==false)
+    if(CLIENT(ufd)->logged_in==false)
     {
         send_message(ufd,"先登录\n");
         return;
     }
-    string key1="blocklist:"+clients[ufd].username;
-    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",key1.c_str(),name.c_str());
+    string key1="blocklist:"+CLIENT(ufd)->username;
+    redisReply*reply1=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key1.c_str(),name.c_str());
     if(reply1==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -1497,7 +1611,7 @@ void jiechupinbi(int ufd,const string&name)
         return;
     }
     freeReplyObject(reply1);
-    redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SREM %s %s",key1.c_str(),name.c_str());
+    redisReply*reply2=(redisReply*)redis_command(redis_conn,"SREM %s %s",key1.c_str(),name.c_str());
     if(!reply2||reply2->type!=REDIS_REPLY_INTEGER||reply2->integer!=1)
     {
         send_message(ufd,"解除屏蔽失败\n");
@@ -1512,9 +1626,11 @@ void jiechupinbi(int ufd,const string&name)
     return;
 
 }
+
+
 void siliao(int sender_fd, const string& target_name, const string& content) 
 {
-    Client& c = clients[sender_fd];
+    Client& c = *CLIENT(sender_fd);
     if (!c.logged_in) 
     {
          send_message(sender_fd, "请先登录\n");
@@ -1541,7 +1657,7 @@ void siliao(int sender_fd, const string& target_name, const string& content)
          return; 
     }
 string block="blocklist:"+target_name;
-     redisReply*reply=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",block.c_str(),clients[sender_fd].username.c_str());
+     redisReply*reply=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",block.c_str(),CLIENT(sender_fd)->username.c_str());
      if(reply==nullptr)
      {
         send_message(sender_fd,"网不好\n");
@@ -1554,8 +1670,8 @@ string block="blocklist:"+target_name;
         return;
      }
      freeReplyObject(reply);
-     string block1="blocklist:"+clients[sender_fd].username;
-     redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",block1.c_str(),target_name.c_str());
+     string block1="blocklist:"+CLIENT(sender_fd)->username;
+     redisReply*reply1=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",block1.c_str(),target_name.c_str());
      if(reply1==nullptr)
      {
         send_message(sender_fd,"网不好\n");
@@ -1569,34 +1685,59 @@ string block="blocklist:"+target_name;
      }
      freeReplyObject(reply1);
     string msg = "[私聊]" + c.username + ":" + content + "\n";
-    auto it = name_to_fd.find(target_name);
-    if (it != name_to_fd.end()) 
+    int target_fd = -1;
+    { lock_guard<recursive_mutex> lk(routing_mutex);
+         auto it = name_to_fd.find(target_name); 
+         if (it != name_to_fd.end()) 
+         target_fd = it->second; 
+    }
+    if (target_fd != -1) 
     {
+        bool is_chat=false;
+        {
+            lock_guard<mutex> lock(chat_mtu);
+            auto sender=chat.find(c.username);
+            auto target=chat.find(target_name);
+            if(sender!=chat.end()&&target!=chat.end()&&sender->second==target_name&&target->second==c.username)
+            {
+                is_chat=true;
+            }
+        }
+        if(is_chat)
+        {
+            send_message(target_fd,msg);
+            send_message(sender_fd,msg);
+             string place = (c.username < target_name) ? c.username + ":" + target_name : target_name + ":" + c.username;
+    store_history(c.username, place, content);
+    return;
+        }
+        else
+        {
              string key = "unread:" + target_name+":"+c.username;
-             redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
+             redis_command(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
             send_message(sender_fd, "发送完成\n");
            string place=(c.username<target_name)?c.username+":"+target_name:target_name+":"+c.username;
            store_history(c.username,place,content);
            string key1="unread_size:"+ target_name+":"+c.username;
-           redisReply* incr_reply = (redisReply*)redisCommand(redis_conn, "INCR %s", key1.c_str());
+           redisReply* incr_reply = (redisReply*)redis_command(redis_conn, "INCR %s", key1.c_str());
 if (incr_reply) {
     cerr << "INCR success, new value: " << incr_reply->integer << endl;
     freeReplyObject(incr_reply);
 } else {
     cerr << "INCR failed" << endl;
 }
-           send_unreadsize(key1,clients[sender_fd].username,target_name);
-    } 
+           send_unreadsize(key1,CLIENT(sender_fd)->username,target_name);
+    } }
     else
      {
         
         string key2="offline:"+target_name;
-        redisCommand(redis_conn,"RPUSH %s %s",key2.c_str(),c.username.c_str());
+        redis_command(redis_conn,"RPUSH %s %s",key2.c_str(),c.username.c_str());
          send_message(sender_fd, "对方离线，已存储\n");
         string key = "unread:" + target_name+":"+c.username;
-        redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
+        redis_command(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
           string key3="unread_size:" + target_name+":"+c.username;
-        redisReply* incr_reply = (redisReply*)redisCommand(redis_conn, "INCR %s", key3.c_str());
+        redisReply* incr_reply = (redisReply*)redis_command(redis_conn, "INCR %s", key3.c_str());
       
 if (incr_reply) {
     cerr << "INCR success, new value: " << incr_reply->integer << endl;
@@ -1611,7 +1752,7 @@ if (incr_reply) {
 
 void chuangqun(int ufd, const string& qun)
  {
-    if (!clients[ufd].logged_in) 
+    if (!CLIENT(ufd)->logged_in) 
     { 
         send_message(ufd, "请先登录\n");
          return;
@@ -1623,8 +1764,8 @@ void chuangqun(int ufd, const string& qun)
     }
     string group_key = "group:" + qun;
     string members_key = group_key + ":members:";
-    string user_groups_key = "user:" + clients[ufd].username + ":groups:";
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", group_key.c_str());
+    string user_groups_key = "user:" + CLIENT(ufd)->username + ":groups:";
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", group_key.c_str());
     if (reply == nullptr) 
     { 
         send_message(ufd, "网络错误\n"); 
@@ -1637,7 +1778,7 @@ void chuangqun(int ufd, const string& qun)
         return;
     }
     freeReplyObject(reply);
-    reply = (redisReply*)redisCommand(redis_conn, "HSET %s owner %s", group_key.c_str(), clients[ufd].username.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "HSET %s owner %s", group_key.c_str(), CLIENT(ufd)->username.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_INTEGER || reply->integer != 1) 
     {
         send_message(ufd, "创建群失败\n");
@@ -1645,7 +1786,7 @@ void chuangqun(int ufd, const string& qun)
         return;
     }
     freeReplyObject(reply);
-    reply = (redisReply*)redisCommand(redis_conn, "SADD %s %s", members_key.c_str(), clients[ufd].username.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SADD %s %s", members_key.c_str(), CLIENT(ufd)->username.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_INTEGER) 
     {
         send_message(ufd, "加入群成员失败\n");
@@ -1653,7 +1794,7 @@ void chuangqun(int ufd, const string& qun)
         return;
     }
     freeReplyObject(reply);
-    reply = (redisReply*)redisCommand(redis_conn, "SADD %s %s", user_groups_key.c_str(), qun.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SADD %s %s", user_groups_key.c_str(), qun.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_INTEGER) 
     {
         send_message(ufd, "更新用户群列表失败\n");
@@ -1668,26 +1809,26 @@ void guanli(int ufd,const string&qun1,const string&name)
 {
      string qun = trim(qun1);
       cout << "guanli: qun=[" << qun << "], len=" << qun.size() << ", name=[" << name << "]" << endl;
-    if(clients[ufd].logged_in==false)
+    if(CLIENT(ufd)->logged_in==false)
     {
         send_message(ufd,"先登陆\n");
         return;
     }
      string key = "group:" + qun;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "HGET %s owner", key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "HGET %s owner", key.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
     }
     // 不提前检查类型，直接与 jiesan 一致的处理方式
-    if (reply->type != REDIS_REPLY_STRING || string(reply->str) != clients[ufd].username) {
+    if (reply->type != REDIS_REPLY_STRING || string(reply->str) != CLIENT(ufd)->username) {
         send_message(ufd, "不是群主没有权限添加管理员\n");
         freeReplyObject(reply);
         return;
     }
     freeReplyObject(reply);
     string key3="group:"+qun+":members:";
-    redisReply*reply3=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",key3.c_str(),name.c_str());
+    redisReply*reply3=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key3.c_str(),name.c_str());
     if(reply3==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -1701,7 +1842,7 @@ void guanli(int ufd,const string&qun1,const string&name)
     }
     freeReplyObject(reply3);
     string key2="group:"+qun+":guanli:";
-    redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SADD %s %s",key2.c_str(),name.c_str());
+    redisReply*reply2=(redisReply*)redis_command(redis_conn,"SADD %s %s",key2.c_str(),name.c_str());
     if(reply2==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -1733,34 +1874,35 @@ void guanli(int ufd,const string&qun1,const string&name)
         return;
     }
     freeReplyObject(reply2);
-    string msg=clients[ufd].username+"将你设置为"+qun+"管理员"+'\n';
-    auto it=name_to_fd.find(name);
-    if(it!=name_to_fd.end())
+    string msg=CLIENT(ufd)->username+"将你设置为"+qun+"管理员"+'\n';
+    int target_fd = -1;
+    { lock_guard<recursive_mutex> lk(routing_mutex); auto it=name_to_fd.find(name); if(it!=name_to_fd.end()) target_fd=it->second; }
+    if(target_fd != -1)
     {
-        send_message(it->second,msg);
+        send_message(target_fd,msg);
     }
     else
     {
        string key4="offline:"+name;
-       redisCommand(redis_conn,"RPUSH %s %s",key4.c_str(),msg.c_str());
+       redis_command(redis_conn,"RPUSH %s %s",key4.c_str(),msg.c_str());
     }
     return;
 }
 void shanguan(int ufd,const string&qun,const string &name)
 {
-    if(clients[ufd].logged_in==false)
+    if(CLIENT(ufd)->logged_in==false)
     {
         send_message(ufd,"先登陆\n");
         return;
     }
     string key="group:"+qun;
-    redisReply*reply=(redisReply*)redisCommand(redis_conn,"HGET %s owner",key.c_str());
+    redisReply*reply=(redisReply*)redis_command(redis_conn,"HGET %s owner",key.c_str());
     if(reply==nullptr)
     {
         send_message(ufd,"网不好\n");
         return;
     }
-    if(reply->type!=REDIS_REPLY_STRING||string(reply->str)!=clients[ufd].username)
+    if(reply->type!=REDIS_REPLY_STRING||string(reply->str)!=CLIENT(ufd)->username)
     {
         send_message(ufd,"你不是群主无法删除管理员\n");
         freeReplyObject(reply);
@@ -1768,7 +1910,7 @@ void shanguan(int ufd,const string&qun,const string &name)
     }
     freeReplyObject(reply);
     string key2="group:"+qun+":guanli:";
-    redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",key2.c_str(),name.c_str());
+    redisReply*reply2=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key2.c_str(),name.c_str());
     if(reply2==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -1781,7 +1923,7 @@ void shanguan(int ufd,const string&qun,const string &name)
         return;
     }
     freeReplyObject(reply2);
-        redisReply*reply3=(redisReply*)redisCommand(redis_conn,"SREM %s %s",key2.c_str(),name.c_str());
+        redisReply*reply3=(redisReply*)redis_command(redis_conn,"SREM %s %s",key2.c_str(),name.c_str());
     if(reply3==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -1795,7 +1937,7 @@ void shanguan(int ufd,const string&qun,const string &name)
     }
     freeReplyObject(reply3);
     send_message(ufd,"删除管理员成功\n");
-    string msg=clients[ufd].username+"删除了你在群"+qun+"的管理员身份\n";
+    string msg=CLIENT(ufd)->username+"删除了你在群"+qun+"的管理员身份\n";
    xitongbobao(name,msg);
    return;
 }
@@ -1803,14 +1945,14 @@ void shanguan(int ufd,const string&qun,const string &name)
 
 void add_group(int ufd, const string& qun) {
     // 1. 登录检查
-    if (!clients[ufd].logged_in) {
+    if (!CLIENT(ufd)->logged_in) {
         send_message(ufd, "请先登录\n");
         return;
     }
 
     // 2. 检查群是否存在
     string group_key = "group:" + qun;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", group_key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", group_key.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
@@ -1824,7 +1966,7 @@ void add_group(int ufd, const string& qun) {
 
     // 3. 检查是否已是群成员
     string members_key = group_key + ":members:";
-    reply = (redisReply*)redisCommand(redis_conn, "SISMEMBER %s %s", members_key.c_str(), clients[ufd].username.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SISMEMBER %s %s", members_key.c_str(), CLIENT(ufd)->username.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
@@ -1843,7 +1985,7 @@ void add_group(int ufd, const string& qun) {
 
     // 4. 检查是否已发送过申请
     string requests_key = "jiaqunshengqing:" + qun;
-    reply = (redisReply*)redisCommand(redis_conn, "SISMEMBER %s %s", requests_key.c_str(), clients[ufd].username.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SISMEMBER %s %s", requests_key.c_str(), CLIENT(ufd)->username.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
@@ -1861,7 +2003,7 @@ void add_group(int ufd, const string& qun) {
     freeReplyObject(reply);
 
     // 5. 发送申请
-    redisReply* reply2 = (redisReply*)redisCommand(redis_conn, "SADD %s %s", requests_key.c_str(), clients[ufd].username.c_str());
+    redisReply* reply2 = (redisReply*)redis_command(redis_conn, "SADD %s %s", requests_key.c_str(), CLIENT(ufd)->username.c_str());
     if (!reply2) {
         send_message(ufd, "网络错误\n");
         return;
@@ -1877,10 +2019,10 @@ void add_group(int ufd, const string& qun) {
     send_message(ufd, "加群申请已发送，等待群主或管理员审批\n");
 
     // 7. 通知群主
-    reply = (redisReply*)redisCommand(redis_conn, "HGET %s owner", group_key.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "HGET %s owner", group_key.c_str());
     if (reply && reply->type == REDIS_REPLY_STRING) {
         string owner = reply->str;
-        string notify_msg = clients[ufd].username + " 申请加入群 " + qun +
+        string notify_msg = CLIENT(ufd)->username + " 申请加入群 " + qun +
                             "，请使用 /list_group " + qun + " 查看，并回复 /approve " + qun + " <用户名> 或 /rejectgroup " + qun + " <用户名>\n";
         xitongbobao(owner, notify_msg);
         freeReplyObject(reply);
@@ -1890,14 +2032,14 @@ void add_group(int ufd, const string& qun) {
 
     // 8. 通知管理员（不包括群主）
     string admins_key = group_key + ":guanli:";
-    reply = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", admins_key.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", admins_key.c_str());
     if (reply && reply->type == REDIS_REPLY_ARRAY) {
-        string notify_msg = clients[ufd].username + " 申请加入群 " + qun +
+        string notify_msg = CLIENT(ufd)->username + " 申请加入群 " + qun +
                             "，请使用 /list_group " + qun + " 查看，并回复 /approve " + qun + " <用户名> 或 /rejectgroup " + qun + " <用户名>\n";
         for (size_t i = 0; i < reply->elements; ++i) {
             string admin = reply->element[i]->str;
             // 避免重复通知群主（群主已经在上面通知过）
-            if (admin != clients[ufd].username) {
+            if (admin != CLIENT(ufd)->username) {
                 xitongbobao(admin, notify_msg);
             }
         }
@@ -1910,14 +2052,14 @@ void add_group(int ufd, const string& qun) {
 
 void list_group(int ufd,const string&group)
 {
-    if(clients[ufd].logged_in==false)
+    if(CLIENT(ufd)->logged_in==false)
     {
         send_message(ufd,"先登录\n");
         return;
     }
      // 2. 检查群是否存在
     string group_key = "group:" + group;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", group_key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", group_key.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
@@ -1932,7 +2074,7 @@ void list_group(int ufd,const string&group)
 
     bool a=false;
     string key1="group:"+group;
-    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"HGET %s owner",key1.c_str());
+    redisReply*reply1=(redisReply*)redis_command(redis_conn,"HGET %s owner",key1.c_str());
     if(reply1==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -1944,13 +2086,13 @@ void list_group(int ufd,const string&group)
         freeReplyObject(reply1);
         return;
     }
-    if(string(reply1->str)==clients[ufd].username)
+    if(string(reply1->str)==CLIENT(ufd)->username)
     {
         a=true;
     }
     freeReplyObject(reply1);
     string key2="group:"+group+":guanli:";
-    redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SMEMBERS %s",key2.c_str());
+    redisReply*reply2=(redisReply*)redis_command(redis_conn,"SMEMBERS %s",key2.c_str());
      if(!reply2)
      {
         send_message(ufd,"网不好\n");
@@ -1960,7 +2102,7 @@ void list_group(int ufd,const string&group)
      {
         for(size_t i=0;i<reply2->elements;i++)
         {
-            if(clients[ufd].username==reply2->element[i]->str)
+            if(CLIENT(ufd)->username==reply2->element[i]->str)
             {
                 a=true;
                 break;
@@ -1974,7 +2116,7 @@ void list_group(int ufd,const string&group)
         return;
      }
      string key3="jiaqunshengqing:"+group;
-     redisReply*reply3=(redisReply*)redisCommand(redis_conn,"SMEMBERS %s",key3.c_str());
+     redisReply*reply3=(redisReply*)redis_command(redis_conn,"SMEMBERS %s",key3.c_str());
      if(reply3==nullptr)
      {
         send_message(ufd,"网不好\n");
@@ -2002,14 +2144,14 @@ void list_group(int ufd,const string&group)
 }
 
 void accept_group(int ufd, const string& group, const string& name) {
-    if (!clients[ufd].logged_in) {
+    if (!CLIENT(ufd)->logged_in) {
         send_message(ufd, "请先登录\n");
         return;
     }
 
     // 1. 检查群是否存在
     string group_key = "group:" + group;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", group_key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", group_key.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
@@ -2023,7 +2165,7 @@ void accept_group(int ufd, const string& group, const string& name) {
 
     // 2. 检查申请是否存在
     string requests_key = "jiaqunshengqing:" + group;
-    reply = (redisReply*)redisCommand(redis_conn, "SISMEMBER %s %s", requests_key.c_str(), name.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SISMEMBER %s %s", requests_key.c_str(), name.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
@@ -2042,26 +2184,26 @@ void accept_group(int ufd, const string& group, const string& name) {
 
     // 3. 权限检查（群主或管理员）
     bool has_permission = false;
-    reply = (redisReply*)redisCommand(redis_conn, "HGET %s owner", group_key.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "HGET %s owner", group_key.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
     }
-    if (reply->type == REDIS_REPLY_STRING && string(reply->str) == clients[ufd].username) {
+    if (reply->type == REDIS_REPLY_STRING && string(reply->str) == CLIENT(ufd)->username) {
         has_permission = true;
     }
     freeReplyObject(reply);
 
     if (!has_permission) {
         string admins_key = group_key + ":guanli:";
-        reply = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", admins_key.c_str());
+        reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", admins_key.c_str());
         if (!reply) {
             send_message(ufd, "网络错误\n");
             return;
         }
         if (reply->type == REDIS_REPLY_ARRAY) {
             for (size_t i = 0; i < reply->elements; ++i) {
-                if (string(reply->element[i]->str) == clients[ufd].username) {
+                if (string(reply->element[i]->str) == CLIENT(ufd)->username) {
                     has_permission = true;
                     break;
                 }
@@ -2080,7 +2222,7 @@ void accept_group(int ufd, const string& group, const string& name) {
     string user_groups_key = "user:" + name + ":groups:";
 
     // 4a. 添加群成员
-    redisReply* r1 = (redisReply*)redisCommand(redis_conn, "SADD %s %s", members_key.c_str(), name.c_str());
+    redisReply* r1 = (redisReply*)redis_command(redis_conn, "SADD %s %s", members_key.c_str(), name.c_str());
     if (!r1 || r1->type != REDIS_REPLY_INTEGER) {
         send_message(ufd, "批准失败（添加群成员失败）\n");
         if (r1) freeReplyObject(r1);
@@ -2090,10 +2232,10 @@ void accept_group(int ufd, const string& group, const string& name) {
     freeReplyObject(r1);
 
     // 4b. 添加用户群列表
-    redisReply* r2 = (redisReply*)redisCommand(redis_conn, "SADD %s %s", user_groups_key.c_str(), group.c_str());
+    redisReply* r2 = (redisReply*)redis_command(redis_conn, "SADD %s %s", user_groups_key.c_str(), group.c_str());
     if (!r2 || r2->type != REDIS_REPLY_INTEGER) {
         // 回滚：移除群成员
-        redisCommand(redis_conn, "SREM %s %s", members_key.c_str(), name.c_str());
+        redis_command(redis_conn, "SREM %s %s", members_key.c_str(), name.c_str());
         send_message(ufd, "批准失败（更新用户群列表失败）\n");
         if (r2) freeReplyObject(r2);
         return;
@@ -2103,9 +2245,9 @@ void accept_group(int ufd, const string& group, const string& name) {
 
     if (ok1 && ok2) {
         // 删除申请
-        redisCommand(redis_conn, "SREM %s %s", requests_key.c_str(), name.c_str());
+        redis_command(redis_conn, "SREM %s %s", requests_key.c_str(), name.c_str());
         send_message(ufd, "已成功批准 " + name + " 加入群 " + group + "\n");
-        xitongbobao(name, clients[ufd].username + " 批准您加入群 " + group + "\n");
+        xitongbobao(name, CLIENT(ufd)->username + " 批准您加入群 " + group + "\n");
     } else {
         // 理论上不会走到这里，但保留
         send_message(ufd, "批准失败，请重试\n");
@@ -2114,14 +2256,14 @@ void accept_group(int ufd, const string& group, const string& name) {
 
 void reject_group(int ufd,const string&group,const string&name)
 {
-      if (!clients[ufd].logged_in) {
+      if (!CLIENT(ufd)->logged_in) {
         send_message(ufd, "请先登录\n");
         return;
     }
 
     // 1. 检查群是否存在
     string group_key = "group:" + group;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", group_key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", group_key.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
@@ -2135,7 +2277,7 @@ void reject_group(int ufd,const string&group,const string&name)
 
     // 2. 检查申请是否存在
     string requests_key = "jiaqunshengqing:" + group;
-    reply = (redisReply*)redisCommand(redis_conn, "SISMEMBER %s %s", requests_key.c_str(), name.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SISMEMBER %s %s", requests_key.c_str(), name.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
@@ -2154,26 +2296,26 @@ void reject_group(int ufd,const string&group,const string&name)
 
     // 3. 权限检查（群主或管理员）
     bool has_permission = false;
-    reply = (redisReply*)redisCommand(redis_conn, "HGET %s owner", group_key.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "HGET %s owner", group_key.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
     }
-    if (reply->type == REDIS_REPLY_STRING && string(reply->str) == clients[ufd].username) {
+    if (reply->type == REDIS_REPLY_STRING && string(reply->str) == CLIENT(ufd)->username) {
         has_permission = true;
     }
     freeReplyObject(reply);
 
     if (!has_permission) {
         string admins_key = group_key + ":guanli:";
-        reply = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", admins_key.c_str());
+        reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", admins_key.c_str());
         if (!reply) {
             send_message(ufd, "网络错误\n");
             return;
         }
         if (reply->type == REDIS_REPLY_ARRAY) {
             for (size_t i = 0; i < reply->elements; ++i) {
-                if (string(reply->element[i]->str) == clients[ufd].username) {
+                if (string(reply->element[i]->str) == CLIENT(ufd)->username) {
                     has_permission = true;
                     break;
                 }
@@ -2187,7 +2329,7 @@ void reject_group(int ufd,const string&group,const string&name)
         return;
     }
   
-     redisReply* del_reply = (redisReply*)redisCommand(redis_conn, "SREM %s %s", requests_key.c_str(), name.c_str());
+     redisReply* del_reply = (redisReply*)redis_command(redis_conn, "SREM %s %s", requests_key.c_str(), name.c_str());
     if (!del_reply || del_reply->type != REDIS_REPLY_INTEGER || del_reply->integer != 1)
     {
         send_message(ufd, "拒绝失败，请重试\n");
@@ -2202,14 +2344,14 @@ void reject_group(int ufd,const string&group,const string&name)
 
 void shanchenyuan(int ufd,const string&group,const string&name)
 {
-    if (!clients[ufd].logged_in) {
+    if (!CLIENT(ufd)->logged_in) {
         send_message(ufd, "请先登录\n");
         return;
     }
 
     // 1. 检查群是否存在
     string group_key = "group:" + group;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", group_key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", group_key.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
@@ -2223,26 +2365,26 @@ void shanchenyuan(int ufd,const string&group,const string&name)
 
     // 3. 权限检查（群主或管理员）
     bool has_permission = false;
-    reply = (redisReply*)redisCommand(redis_conn, "HGET %s owner", group_key.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "HGET %s owner", group_key.c_str());
     if (!reply) {
         send_message(ufd, "网络错误\n");
         return;
     }
-    if (reply->type == REDIS_REPLY_STRING && string(reply->str) == clients[ufd].username) {
+    if (reply->type == REDIS_REPLY_STRING && string(reply->str) == CLIENT(ufd)->username) {
         has_permission = true;
     }
     freeReplyObject(reply);
 
     if (!has_permission) {
         string admins_key = group_key + ":guanli:";
-        reply = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", admins_key.c_str());
+        reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", admins_key.c_str());
         if (!reply) {
             send_message(ufd, "网络错误\n");
             return;
         }
         if (reply->type == REDIS_REPLY_ARRAY) {
             for (size_t i = 0; i < reply->elements; ++i) {
-                if (string(reply->element[i]->str) == clients[ufd].username) {
+                if (string(reply->element[i]->str) == CLIENT(ufd)->username) {
                     has_permission = true;
                     break;
                 }
@@ -2257,7 +2399,7 @@ void shanchenyuan(int ufd,const string&group,const string&name)
     }
      
     string key1="group:"+group+":members:";
-    redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",key1.c_str(),name.c_str());
+    redisReply*reply1=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key1.c_str(),name.c_str());
     if(!reply1)
     {
         send_message(ufd,"网不好\n");
@@ -2276,7 +2418,7 @@ void shanchenyuan(int ufd,const string&group,const string&name)
         return;
     }
     freeReplyObject(reply1);
-    redisReply*reply2=(redisReply*)redisCommand(redis_conn,"SREM %s %s",key1.c_str(),name.c_str());
+    redisReply*reply2=(redisReply*)redis_command(redis_conn,"SREM %s %s",key1.c_str(),name.c_str());
     if(reply2==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -2291,11 +2433,11 @@ void shanchenyuan(int ufd,const string&group,const string&name)
     if(reply2->integer==1)
     {
         string key3="user:"+name+":groups:";
-       redisReply*reply3=(redisReply*)redisCommand(redis_conn,"SREM %s %s",key3.c_str(),group.c_str());
+       redisReply*reply3=(redisReply*)redis_command(redis_conn,"SREM %s %s",key3.c_str(),group.c_str());
       if(!reply3||reply3->type!=REDIS_REPLY_INTEGER||reply3->integer!=1)
       {
         send_message(ufd,"移除失败\n");
-        redisCommand(redis_conn,"SADD %s %s",key1.c_str(),name.c_str());
+        redis_command(redis_conn,"SADD %s %s",key1.c_str(),name.c_str());
         if(reply3)
         {
             freeReplyObject(reply3);
@@ -2317,7 +2459,7 @@ void shanchenyuan(int ufd,const string&group,const string&name)
 
 void qunliao(int sender_fd, const string& qun, const string& content) 
 {
-    if (!clients[sender_fd].logged_in) 
+    if (!CLIENT(sender_fd)->logged_in) 
     { 
         send_message(sender_fd, "请先登录\n");
          return; 
@@ -2329,7 +2471,7 @@ void qunliao(int sender_fd, const string& qun, const string& content)
     }
     string group_key = "group:" + qun;
     string members_key = group_key + ":members:";
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", group_key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", group_key.c_str());
     if (reply == nullptr) 
     {
          send_message(sender_fd, "网络错误\n");
@@ -2342,7 +2484,7 @@ void qunliao(int sender_fd, const string& qun, const string& content)
         return;
     }
     freeReplyObject(reply);
-    reply = (redisReply*)redisCommand(redis_conn, "SISMEMBER %s %s", members_key.c_str(), clients[sender_fd].username.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SISMEMBER %s %s", members_key.c_str(), CLIENT(sender_fd)->username.c_str());
     if (reply == nullptr) 
     {
          send_message(sender_fd, "网络错误\n"); 
@@ -2355,9 +2497,8 @@ void qunliao(int sender_fd, const string& qun, const string& content)
         return;
     }
     freeReplyObject(reply);
-    auto c=clients[sender_fd];
-    string msg = "[群聊 " + qun + "] " + clients[sender_fd].username + ": " + content + "\n";
-    reply = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", members_key.c_str());
+    string msg = "[群聊 " + qun + "] " + CLIENT(sender_fd)->username + ": " + content + "\n";
+    reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", members_key.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_ARRAY)
      {
         send_message(sender_fd, "获取成员列表失败\n");
@@ -2368,16 +2509,16 @@ void qunliao(int sender_fd, const string& qun, const string& content)
     for (size_t i = 0; i < reply->elements; ++i) 
     {
         string member = reply->element[i]->str;
-        if (member == clients[sender_fd].username) 
+        if (member == CLIENT(sender_fd)->username) 
         {continue;}
-        auto it = name_to_fd.find(member);
-        if (it != name_to_fd.end()) 
+        int member_fd = -1;
+        { lock_guard<recursive_mutex> lk(routing_mutex); auto it = name_to_fd.find(member); if (it != name_to_fd.end()) member_fd = it->second; }
+        if (member_fd != -1) 
         {
              string key = "unread:" + member+":"+qun;
-             redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
-            send_message(sender_fd, "发送完成\n");
+             redis_command(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
            string key1="unread_size:"+ member+":"+qun;
-           redisReply* incr_reply = (redisReply*)redisCommand(redis_conn, "INCR %s", key1.c_str());
+           redisReply* incr_reply = (redisReply*)redis_command(redis_conn, "INCR %s", key1.c_str());
 if (incr_reply) {
     cerr << "INCR success, new value: " << incr_reply->integer << endl;
     freeReplyObject(incr_reply);
@@ -2389,11 +2530,11 @@ if (incr_reply) {
         else
          {
              string key = "unread:" + member+":"+qun;
-        redisCommand(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
+        redis_command(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
         string key2="offline:"+member;
-        redisCommand(redis_conn,"RPUSH %s %s",key2.c_str(),qun.c_str());
+        redis_command(redis_conn,"RPUSH %s %s",key2.c_str(),qun.c_str());
         string key3="unread_size:" + member+":"+qun;
-        redisReply* incr_reply = (redisReply*)redisCommand(redis_conn, "INCR %s", key3.c_str());
+        redisReply* incr_reply = (redisReply*)redis_command(redis_conn, "INCR %s", key3.c_str());
 if (incr_reply) {
     cerr << "INCR success, new value: " << incr_reply->integer << endl;
     freeReplyObject(incr_reply);
@@ -2404,20 +2545,20 @@ if (incr_reply) {
     }
     freeReplyObject(reply);
     string place="group:"+qun;
-    store_history(clients[sender_fd].username,place,content);
+    store_history(CLIENT(sender_fd)->username,place,content);
     send_message(sender_fd, "群发完成\n");
 }
 
 void chachengyuan(int ufd, const string& qun)
  {
-    if (!clients[ufd].logged_in)
+    if (!CLIENT(ufd)->logged_in)
      {
          send_message(ufd, "请先登录\n"); 
          return;
      }
     string group_key = "group:" + qun;
     string members_key = group_key + ":members:";
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", group_key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", group_key.c_str());
     if (reply == nullptr)
      { 
         send_message(ufd, "网络错误\n"); 
@@ -2430,7 +2571,7 @@ void chachengyuan(int ufd, const string& qun)
         return;
     }
     freeReplyObject(reply);
-    reply = (redisReply*)redisCommand(redis_conn, "SISMEMBER %s %s", members_key.c_str(), clients[ufd].username.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SISMEMBER %s %s", members_key.c_str(), CLIENT(ufd)->username.c_str());
     if (reply == nullptr) 
     {
          send_message(ufd, "网络错误\n"); 
@@ -2443,7 +2584,7 @@ void chachengyuan(int ufd, const string& qun)
         return;
     }
     freeReplyObject(reply);
-    reply = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", members_key.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", members_key.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_ARRAY) 
     {
         send_message(ufd, "获取成员列表失败\n");
@@ -2468,14 +2609,14 @@ void chachengyuan(int ufd, const string& qun)
 
 void chaqun(int ufd) 
 {
-    if (!clients[ufd].logged_in)
+    if (!CLIENT(ufd)->logged_in)
     {
         send_message(ufd, "请先登录\n");
         return;
     }
-    string key = "user:" + clients[ufd].username + ":groups:";
+    string key = "user:" + CLIENT(ufd)->username + ":groups:";
     cout << "chaqun: key = " << key << endl;  
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "SMEMBERS %s", key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "SMEMBERS %s", key.c_str());
     if (reply == nullptr)
      {
         send_message(ufd, "网络错误\n");
@@ -2507,8 +2648,8 @@ void chaqun(int ufd)
 
 void lixian(int ufd) 
 {
-    string key = "offline:" + clients[ufd].username;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "LRANGE %s 0 -1", key.c_str());
+    string key = "offline:" + CLIENT(ufd)->username;
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "LRANGE %s 0 -1", key.c_str());
     if (reply == nullptr) 
     { 
         send_message(ufd, "拉取离线消息失败\n"); 
@@ -2535,19 +2676,19 @@ void lixian(int ufd)
     }
     for(const string&i:name)
     {
-         string key2="unread_size:"+clients[ufd].username+":"+i;
-        send_unreadsize(key2,i,clients[ufd].username);
+         string key2="unread_size:"+CLIENT(ufd)->username+":"+i;
+        send_unreadsize(key2,i,CLIENT(ufd)->username);
     }
     freeReplyObject(reply);
-    redisCommand(redis_conn, "DEL %s", key.c_str());
+    redis_command(redis_conn, "DEL %s", key.c_str());
     send_message(ufd, "消息拉取完成\n");
 }
 
 void Read(int ufd,const string&name) 
 {
-    string key = "unread:" + clients[ufd].username+":"+name;
-    string count_key = "unread_size:" + clients[ufd].username + ":" + name;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "LRANGE %s 0 -1", key.c_str());
+    string key = "unread:" + CLIENT(ufd)->username+":"+name;
+    string count_key = "unread_size:" + CLIENT(ufd)->username + ":" + name;
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "LRANGE %s 0 -1", key.c_str());
     if (reply == nullptr) 
     { 
         send_message(ufd, "拉取未读消息失败\n"); 
@@ -2572,20 +2713,20 @@ void Read(int ufd,const string&name)
         send_message(ufd, msg);
     }
     freeReplyObject(reply);
-    redisCommand(redis_conn, "DEL %s", key.c_str());
-     redisCommand(redis_conn, "DEL %s", count_key.c_str());
+    redis_command(redis_conn, "DEL %s", key.c_str());
+     redis_command(redis_conn, "DEL %s", count_key.c_str());
     send_message(ufd, "未读消息拉取完成\n");
 }
 
 void tuiqun(int ufd,const string&qun)
 {
-    if(clients[ufd].logged_in==false)
+    if(CLIENT(ufd)->logged_in==false)
     {
         send_message(ufd,"先登陆\n");
         return;
     }
-   string key1="user:"+clients[ufd].username+":groups:";
-   redisReply*reply1=(redisReply*)redisCommand(redis_conn,"SISMEMBER %s %s",key1.c_str(),qun.c_str());
+   string key1="user:"+CLIENT(ufd)->username+":groups:";
+   redisReply*reply1=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key1.c_str(),qun.c_str());
    if(reply1==nullptr)
    {
     send_message(ufd,"网不好\n");
@@ -2599,7 +2740,7 @@ void tuiqun(int ufd,const string&qun)
    }
    freeReplyObject(reply1);
    string key2="group:"+qun;
-   redisReply*reply2=(redisReply*)redisCommand(redis_conn,"HGET %s owner",key2.c_str());
+   redisReply*reply2=(redisReply*)redis_command(redis_conn,"HGET %s owner",key2.c_str());
    if(reply2==nullptr)
    {
     send_message(ufd,"网不好\n");
@@ -2607,7 +2748,7 @@ void tuiqun(int ufd,const string&qun)
    }
    if(reply2->type==REDIS_REPLY_STRING)
    {
-    if(reply2->str==clients[ufd].username)
+    if(reply2->str==CLIENT(ufd)->username)
     {
         send_message(ufd,"你是群主，请先转让群主\n");
         freeReplyObject(reply2);
@@ -2616,7 +2757,7 @@ void tuiqun(int ufd,const string&qun)
    }
    freeReplyObject(reply2);
    string key4="group:"+qun+":members:";
-   redisReply*reply4=(redisReply*)redisCommand(redis_conn,"SREM %s %s",key4.c_str(),clients[ufd].username.c_str());
+   redisReply*reply4=(redisReply*)redis_command(redis_conn,"SREM %s %s",key4.c_str(),CLIENT(ufd)->username.c_str());
    if(reply4==nullptr)
    {
     send_message(ufd,"网不好\n");
@@ -2633,8 +2774,8 @@ void tuiqun(int ufd,const string&qun)
   return;
    }
    freeReplyObject(reply4);
-   string key3="user:"+clients[ufd].username+":groups:";
-   redisReply*reply3=(redisReply*)redisCommand(redis_conn,"SREM %s %s",key3.c_str(),qun.c_str());
+   string key3="user:"+CLIENT(ufd)->username+":groups:";
+   redisReply*reply3=(redisReply*)redis_command(redis_conn,"SREM %s %s",key3.c_str(),qun.c_str());
    if(reply3==nullptr)
    {
     send_message(ufd,"网不好\n");
@@ -2648,26 +2789,26 @@ void tuiqun(int ufd,const string&qun)
    {
     send_message(ufd,"从用户列表删除失败\n");
     string key="group:"+qun+":members:";
-    redisCommand(redis_conn,"SADD %s %s",key.c_str(),clients[ufd].username.c_str());
+    redis_command(redis_conn,"SADD %s %s",key.c_str(),CLIENT(ufd)->username.c_str());
    }
      freeReplyObject(reply3);
    return;
 }
 void jiesan(int ufd,const string&qun)
 {
-    if(clients[ufd].logged_in==false)
+    if(CLIENT(ufd)->logged_in==false)
     {
         send_message(ufd,"先登陆\n");
         return;
     }
     string key="group:"+qun;
-    redisReply*reply=(redisReply*)redisCommand(redis_conn,"HGET %s owner",key.c_str());
+    redisReply*reply=(redisReply*)redis_command(redis_conn,"HGET %s owner",key.c_str());
     if(reply==nullptr)
     {
         send_message(ufd,"网不好\n");
         return;
     }
-    if(reply->type!=REDIS_REPLY_STRING||string(reply->str)!=clients[ufd].username)
+    if(reply->type!=REDIS_REPLY_STRING||string(reply->str)!=CLIENT(ufd)->username)
     {
         send_message(ufd,"你不是群主\n");
         freeReplyObject(reply);
@@ -2675,7 +2816,7 @@ void jiesan(int ufd,const string&qun)
     }
     freeReplyObject(reply);
     string key2="group:"+qun+":members:";
-    redisReply*reply3=(redisReply*)redisCommand(redis_conn,"SMEMBERS %s",key2.c_str());
+    redisReply*reply3=(redisReply*)redis_command(redis_conn,"SMEMBERS %s",key2.c_str());
     if(reply3==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -2688,7 +2829,7 @@ void jiesan(int ufd,const string&qun)
         {
            string name=reply3->element[i]->str;
             string key4="user:"+name+":groups:";
-          redisReply*reply4=(redisReply*)redisCommand(redis_conn,"SREM %s %s",key4.c_str(),qun.c_str());
+          redisReply*reply4=(redisReply*)redis_command(redis_conn,"SREM %s %s",key4.c_str(),qun.c_str());
           if(reply4==nullptr)
           {
             send_message(ufd,"网不好\n");
@@ -2712,7 +2853,7 @@ void jiesan(int ufd,const string&qun)
         return;
     }
     freeReplyObject(reply3);
-    redisReply*reply2=(redisReply*)redisCommand(redis_conn,"DEL %s",key2.c_str());
+    redisReply*reply2=(redisReply*)redis_command(redis_conn,"DEL %s",key2.c_str());
     if(reply2==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -2726,7 +2867,7 @@ void jiesan(int ufd,const string&qun)
     }
     freeReplyObject(reply2);
     string key3="group:"+qun;
-    redisReply*reply4=(redisReply*)redisCommand(redis_conn,"DEL %s",key3.c_str());
+    redisReply*reply4=(redisReply*)redis_command(redis_conn,"DEL %s",key3.c_str());
     if(reply4==nullptr)
     {
         send_message(ufd,"网不好\n");
@@ -2745,7 +2886,7 @@ void jiesan(int ufd,const string&qun)
 
 void tuichu(int fd)
 {
-    Client& c = clients[fd];
+    Client& c = *CLIENT(fd);
     if (!c.logged_in) {
         send_message(fd, "您尚未登录\n");
         return;
@@ -2753,10 +2894,10 @@ void tuichu(int fd)
     string username = c.username;
 
     
-    redisCommand(redis_conn, "DEL %s", ("online:" + username).c_str());
+    redis_command(redis_conn, "DEL %s", ("online:" + username).c_str());
 
     
-    name_to_fd.erase(username);
+    { lock_guard<recursive_mutex> lk(routing_mutex); auto it=name_to_fd.find(username); if(it!=name_to_fd.end()) name_to_fd.erase(it); }
 
    
     c.logged_in = false;
@@ -2771,7 +2912,7 @@ void handle_command(int fd, const string& line)
  {
     
     cerr << "handle_command: " << line << endl;
-    Client& client = clients[fd];
+    Client& client = *CLIENT(fd);
     istringstream iss(line);
     string cmd;
     iss >> cmd;
@@ -2827,9 +2968,9 @@ void handle_command(int fd, const string& line)
         return;
     }
     if (login1(fd, username, email, code)) {
-        clients[fd].logged_in = true;
-        clients[fd].username = username;
-        name_to_fd[username] = fd;
+        CLIENT(fd)->logged_in = true;
+        CLIENT(fd)->username = username;
+        { lock_guard<recursive_mutex> lk(routing_mutex); name_to_fd[username] = fd; }
         set_online(username);
         send_message(fd, "LOGIN_OK "+username+"\n");
         
@@ -2845,9 +2986,9 @@ void handle_command(int fd, const string& line)
         return;
     }
     if (login2(fd, username,password_hash)) {
-        clients[fd].logged_in = true;
-        clients[fd].username = username;
-        name_to_fd[username] = fd;
+        CLIENT(fd)->logged_in = true;
+        CLIENT(fd)->username = username;
+        { lock_guard<recursive_mutex> lk(routing_mutex); name_to_fd[username] = fd; }
         set_online(username);
         send_message(fd, "LOGIN_OK "+username+"\n");
         
@@ -2930,7 +3071,7 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "私聊")
      {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -2949,11 +3090,28 @@ void handle_command(int fd, const string& line)
             return; 
         }
         content = content.substr(pos);
-        siliao(fd, target, content);
+        if(content!="finish")
+        {
+            if(content=="begin")
+            {
+                lock_guard<mutex> lock(chat_mtu);
+            chat[CLIENT(fd)->username]=target;}
+            else
+           {
+             siliao(fd, target, content);
+           }
+        }
+        else
+        {
+            {
+                lock_guard<mutex> lock(chat_mtu);
+                chat.erase( CLIENT(fd)->username);
+            }
+        }
     }
     else if(cmd=="读取未读消息")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -2967,7 +3125,7 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "创建群聊")
      {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -2981,7 +3139,7 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "加入群聊")
      {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -2995,7 +3153,7 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="查看群聊申请列表")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3009,7 +3167,7 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="同意加入群聊")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3029,7 +3187,7 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="拒绝加入群聊")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3049,7 +3207,7 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "群聊")
      {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3072,7 +3230,7 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="解散群聊")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3085,7 +3243,7 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd =="移除成员")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3108,7 +3266,7 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "查看群成员")
      {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3122,7 +3280,7 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "查看群聊列表") 
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3130,7 +3288,7 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="查看聊天记录")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3144,7 +3302,7 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="设置管理员")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3158,7 +3316,7 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="删除管理员")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3173,7 +3331,7 @@ void handle_command(int fd, const string& line)
     }
     else if(cmd=="退出群聊")
     {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3187,7 +3345,7 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "UPLOAD_FILE") {
 
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3197,7 +3355,7 @@ void handle_command(int fd, const string& line)
         return;
     }
 
-    if (!clients[fd].logged_in) {
+    if (!CLIENT(fd)->logged_in) {
         send_message(fd, "请先登录\n");
         return;
     }
@@ -3214,16 +3372,16 @@ void handle_command(int fd, const string& line)
         return;
     }
 
-    string sender = clients[fd].username;
+    string sender = CLIENT(fd)->username;
 
     handle_file_command(redis_conn, fd, sender, target, filename, filesize);
 }
     else if (cmd == "RESUME_UPLOAD") {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
-        if (!clients[fd].logged_in) {
+        if (!CLIENT(fd)->logged_in) {
         send_message(fd, "请先登录\n");
         return;
     }
@@ -3232,11 +3390,11 @@ void handle_command(int fd, const string& line)
         send_message(fd, "用法: RESUME_UPLOAD <filename>\n");
         return;
     }
-    string sender = clients[fd].username;
+    string sender = CLIENT(fd)->username;
    Resend_file(fd,sender,filename,redis_conn);
 }
     else if (cmd == "DOWNLOAD_FILE") {
-        if(clients[fd].logged_in==false)
+        if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
         }
@@ -3246,13 +3404,13 @@ void handle_command(int fd, const string& line)
         return;
     }
 
-    if (!clients[fd].logged_in) {
+    if (!CLIENT(fd)->logged_in) {
         send_message(fd, "请先登录\n");
         return;
     }
 
     string meta_key = "file:meta:" + file_id;
-    redisReply* reply = (redisReply*)redisCommand(redis_conn, "EXISTS %s", meta_key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis_conn, "EXISTS %s", meta_key.c_str());
     if (!reply || reply->type != REDIS_REPLY_INTEGER || reply->integer != 1) {
         send_message(fd, "文件不存在\n");
         if (reply) freeReplyObject(reply);
@@ -3260,7 +3418,7 @@ void handle_command(int fd, const string& line)
     }
     freeReplyObject(reply);
 
-    reply = (redisReply*)redisCommand(redis_conn, "HGET %s status", meta_key.c_str());
+    reply = (redisReply*)redis_command(redis_conn, "HGET %s status", meta_key.c_str());
     if (!reply || reply->type != REDIS_REPLY_STRING || string(reply->str) != "complete") {
         send_message(fd, "文件未上传完成，无法下载\n");
         if (reply) freeReplyObject(reply);
@@ -3268,7 +3426,7 @@ void handle_command(int fd, const string& line)
     }
     freeReplyObject(reply);
 
-    if (!is_target(fd, redis_conn, file_id, clients[fd].username)) {
+    if (!is_target(fd, redis_conn, file_id, CLIENT(fd)->username)) {
         return;
     }
 
@@ -3284,16 +3442,16 @@ void handle_command(int fd, const string& line)
 }
     else if (cmd == "退出")
      {
-   string leave_msg = "[系统] " + clients[fd].username + " 离开了。\n";
+   string leave_msg = "[系统] " + CLIENT(fd)->username + " 离开了。\n";
    close_connection(fd);       
       
     }
 }
  bool do_handshake(int fd) {
-    auto it = clients.find(fd);
-    if (it == clients.end() || !it->second.ssl) return false;
-
-    Client& c = it->second;
+    shared_ptr<Client> cp = CLIENT(fd);
+    if (!cp || !cp->ssl) return false;
+    lock_guard<recursive_mutex> lk(*cp->state_mutex);
+    Client& c = *cp;
     if (c.handshak_down) return true;
 
     ERR_clear_error();
@@ -3343,6 +3501,22 @@ void cleancurl()
 }
 
 
+
+static void dispatch_command(int fd, const string& line) {
+    shared_ptr<Client> client = CLIENT(fd);
+    if (!client || line.empty()) return;
+    if (!g_thread_pool) return;
+    bool accepted = g_thread_pool->enqueue([fd, line, client] {
+        if (!same_client(fd, client)) return;
+        lock_guard<recursive_mutex> lk(*client->state_mutex);
+        if (client->closing.load()) return;
+        handle_command(fd, line);
+        if (!client->closing.load() && !client->username.empty() && line.find("心跳") == string::npos)
+            send_message(fd, "命令完成\n");
+    });
+    if (!accepted) send_message(fd, "服务器繁忙，请稍后重试\n");
+}
+
 int main() 
 {
     signal(SIGPIPE, SIG_IGN);
@@ -3361,6 +3535,10 @@ int main()
      atexit(cleancurl);
     init_leveldb();
     init_file_transfer(redis_conn);
+    const unsigned hw = thread::hardware_concurrency() ? thread::hardware_concurrency() : 4;
+    const size_t worker_count = max<size_t>(8, min<size_t>(32, static_cast<size_t>(hw) * 2));
+    g_thread_pool = make_unique<ThreadPool>(worker_count, 20000);
+    cout << "Business thread pool started: " << worker_count << " workers" << endl;
     SSL_library_init();
     OpenSSL_add_all_algorithms();
     SSL_load_error_strings();
@@ -3461,9 +3639,15 @@ int main()
                     }
                     SSL_set_fd(ssl, client_fd);
 
-                    Client& c = clients[client_fd];
-                    c.ssl = ssl;
-                    c.handshak_down = false;
+                    auto c = make_shared<Client>();
+                    c->fd = client_fd;
+                    c->generation = next_client_generation.fetch_add(1);
+                    c->ssl = ssl;
+                    c->handshak_down = false;
+                    {
+                        unique_lock<shared_mutex> lk(clients_map_mutex);
+                        clients[client_fd] = c;
+                    }
 
                     struct epoll_event cev{};
                     cev.events = EPOLLIN;
@@ -3472,12 +3656,16 @@ int main()
                         perror("epoll_ctl ADD client");
                         SSL_free(ssl);
                         close(client_fd);
+                        unique_lock<shared_mutex> lk(clients_map_mutex);
                         clients.erase(client_fd);
                         continue;
                     }
 
                     if (is_file_listener) {
-                        file_client_fds.insert(client_fd);
+                        {
+                            lock_guard<recursive_mutex> file_lock(file_mutex);
+                            file_client_fds.insert(client_fd);
+                        }
                         on_file_connection(client_fd, true);
                     }
 
@@ -3485,32 +3673,36 @@ int main()
                 }
                 continue;
             }
-auto cit = clients.find(fd);
-if (cit == clients.end())
+auto cit = CLIENT(fd);
+if (!cit)
     continue;
 
-if (!cit->second.handshak_down) {
+if (!cit->handshak_down) {
 
     do_handshake(fd);
 
-    if (clients.find(fd) == clients.end())
+    if (!CLIENT(fd))
         continue;
 
     continue;
 }
 
 
-const bool is_file =
-    (file_client_fds.find(fd) != file_client_fds.end());
-
+bool is_file = false;
+{
+    lock_guard<recursive_mutex> file_lock(file_mutex);
+    is_file = (file_client_fds.find(fd) != file_client_fds.end());
+}
 
 if (is_file) {
 
-    auto fit = file_contexts.find(fd);
-
-    bool downloading =
-        (fit != file_contexts.end() &&
-         fit->second.download_state == DOWNLOAD_SENDING);
+    bool downloading = false;
+    {
+        lock_guard<recursive_mutex> file_lock(file_mutex);
+        auto fit = file_contexts.find(fd);
+        downloading = (fit != file_contexts.end() &&
+                       fit->second.download_state == DOWNLOAD_SENDING);
+    }
 
     if ((downloading &&
          (revents & (EPOLLIN | EPOLLOUT))) ||
@@ -3520,7 +3712,7 @@ if (is_file) {
         on_file_data(fd, redis_conn);
     }
 
-    if (clients.find(fd) == clients.end())
+    if (!CLIENT(fd))
         continue;
 
 
@@ -3528,7 +3720,7 @@ if (is_file) {
         flush_send_buffer(fd);
     }
 
-    if (clients.find(fd) == clients.end())
+    if (!CLIENT(fd))
         continue;
 
 
@@ -3556,12 +3748,12 @@ if (revents & EPOLLIN) {
 
     if (n > 0) {
 
-        cit = clients.find(fd);
+        cit = CLIENT(fd);
 
-        if (cit == clients.end())
+        if (!cit)
             continue;
 
-        cit->second.recv_buffer.append(
+        cit->recv_buffer.append(
             buf,
             static_cast<size_t>(n)
         );
@@ -3569,16 +3761,16 @@ if (revents & EPOLLIN) {
         size_t pos;
 
         while ((pos =
-                cit->second.recv_buffer.find('\n'))
+                cit->recv_buffer.find('\n'))
                != string::npos) {
 
             string line =
-                cit->second.recv_buffer.substr(
+                cit->recv_buffer.substr(
                     0,
                     pos
                 );
 
-            cit->second.recv_buffer.erase(
+            cit->recv_buffer.erase(
                 0,
                 pos + 1
             );
@@ -3591,25 +3783,17 @@ if (revents & EPOLLIN) {
 
             if (!line.empty()) {
 
-                handle_command(
-                    fd,
-                    line
-                );
-                 if (clients.find(fd) != clients.end() && !clients[fd].username.empty()&&line.find("心跳")==string::npos)
-                 {
-                  send_message(fd, "命令完成\n");
-                 }
+                dispatch_command(fd, line);
             }
 
-            if (clients.find(fd) ==
-                clients.end()) {
+            if (!CLIENT(fd)) {
 
                 break;
             }
 
-            cit = clients.find(fd);
+            cit = CLIENT(fd);
 
-            if (cit == clients.end())
+            if (!cit)
                 break;
         }
 
@@ -3651,7 +3835,7 @@ if (revents & EPOLLIN) {
 }
 
 
-if (clients.find(fd) == clients.end())
+if (!CLIENT(fd))
     continue;
 
 if (revents & EPOLLOUT) {
@@ -3659,7 +3843,7 @@ if (revents & EPOLLOUT) {
     flush_send_buffer(fd);
 }
 
-if (clients.find(fd) == clients.end())
+if (!CLIENT(fd))
     continue;
 
 

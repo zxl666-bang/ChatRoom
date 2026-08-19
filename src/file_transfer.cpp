@@ -28,10 +28,11 @@ map<std::string, std::string> filename_to_file_id;
 redisContext*g_redis;
 const char*path="./files/";
 map<int,FILETRANSFER> file_contexts;
+std::recursive_mutex file_mutex;
 string get_filename_meta(const string&file_id,redisContext*redis)
 {
     string key="file:meta:"+file_id;
-    redisReply*reply=(redisReply*)redisCommand(redis,"HGET %s filename",key.c_str());
+    redisReply*reply=(redisReply*)redis_command(redis,"HGET %s filename",key.c_str());
     if(!reply||reply->type!=REDIS_REPLY_STRING)
     {
         if(reply)
@@ -53,7 +54,7 @@ string get_filename_meta(const string&file_id,redisContext*redis)
 long long get_file_size(const string&file_id,redisContext*redis)
 {
     string key="file:meta:"+file_id;
-    redisReply*reply=(redisReply*)redisCommand(redis,"HGET %s filesize",key.c_str());
+    redisReply*reply=(redisReply*)redis_command(redis,"HGET %s filesize",key.c_str());
     if(reply==nullptr||reply->type!=REDIS_REPLY_STRING)
     {
         if(reply)
@@ -69,7 +70,7 @@ long long get_file_size(const string&file_id,redisContext*redis)
 
 bool is_target(int fd, redisContext* redis, const string& file_id, const string& name) {
     string key = "file:meta:" + file_id;
-    redisReply* group_reply = (redisReply*)redisCommand(redis, "HGET %s is_group", key.c_str());
+    redisReply* group_reply = (redisReply*)redis_command(redis, "HGET %s is_group", key.c_str());
     if (!group_reply || group_reply->type != REDIS_REPLY_STRING) {
         if (group_reply) freeReplyObject(group_reply);
         send_message(fd, "系统错误：无法获取文件类型\n");
@@ -78,7 +79,7 @@ bool is_target(int fd, redisContext* redis, const string& file_id, const string&
     bool is_group = (string(group_reply->str) == "1");
     freeReplyObject(group_reply);
 
-    redisReply* target_reply = (redisReply*)redisCommand(redis, "HGET %s target", key.c_str());
+    redisReply* target_reply = (redisReply*)redis_command(redis, "HGET %s target", key.c_str());
     if (!target_reply || target_reply->type != REDIS_REPLY_STRING) {
         if (target_reply) freeReplyObject(target_reply);
         send_message(fd, "系统错误：无法获取目标\n");
@@ -96,7 +97,7 @@ bool is_target(int fd, redisContext* redis, const string& file_id, const string&
     }
 
     string members_key = "group:" + target + ":members:"; 
-    redisReply* member_reply = (redisReply*)redisCommand(redis, "SISMEMBER %s %s", members_key.c_str(), name.c_str());
+    redisReply* member_reply = (redisReply*)redis_command(redis, "SISMEMBER %s %s", members_key.c_str(), name.c_str());
     if (!member_reply || member_reply->type != REDIS_REPLY_INTEGER) {
         if (member_reply) freeReplyObject(member_reply);
         send_message(fd, "系统错误：无法验证群成员\n");
@@ -138,14 +139,14 @@ void cleanup_temp_files(redisContext* redis) {
 }
 
             string progress_key = "file:progress:" + file_id;
-            redisReply* reply_progress = (redisReply*)redisCommand(redis, "DEL %s", progress_key.c_str());
+            redisReply* reply_progress = (redisReply*)redis_command(redis, "DEL %s", progress_key.c_str());
             if (!reply_progress || reply_progress->type != REDIS_REPLY_INTEGER) {
                 cerr << "删除进度键失败: " << progress_key << endl;
             }
             if (reply_progress) freeReplyObject(reply_progress);
 
             string meta_key = "file:meta:" + file_id;
-            redisReply* reply_meta = (redisReply*)redisCommand(redis, "DEL %s", meta_key.c_str());
+            redisReply* reply_meta = (redisReply*)redis_command(redis, "DEL %s", meta_key.c_str());
             if (!reply_meta || reply_meta->type != REDIS_REPLY_INTEGER) {
                 cerr << "删除元信息键失败: " << meta_key << endl;
             }
@@ -159,22 +160,22 @@ void cleanup_temp_files(redisContext* redis) {
 void notify_reciver(redisContext* redis, const string& file_id) {
     string meta_key = "file:meta:" + file_id;
 
-    redisReply* reply1 = (redisReply*)redisCommand(redis, "HGET %s sender", meta_key.c_str());
+    redisReply* reply1 = (redisReply*)redis_command(redis, "HGET %s sender", meta_key.c_str());
     if (!reply1 || reply1->type != REDIS_REPLY_STRING) { if (reply1) freeReplyObject(reply1); return; }
     string sender = reply1->str;
     freeReplyObject(reply1);
 
-    redisReply* reply2 = (redisReply*)redisCommand(redis, "HGET %s target", meta_key.c_str());
+    redisReply* reply2 = (redisReply*)redis_command(redis, "HGET %s target", meta_key.c_str());
     if (!reply2 || reply2->type != REDIS_REPLY_STRING) { if (reply2) freeReplyObject(reply2); return; }
     string target = reply2->str;
     freeReplyObject(reply2);
 
-    redisReply* reply3 = (redisReply*)redisCommand(redis, "HGET %s filename", meta_key.c_str());
+    redisReply* reply3 = (redisReply*)redis_command(redis, "HGET %s filename", meta_key.c_str());
     if (!reply3 || reply3->type != REDIS_REPLY_STRING) { if (reply3) freeReplyObject(reply3); return; }
     string filename = reply3->str;
     freeReplyObject(reply3);
 
-    redisReply* reply4 = (redisReply*)redisCommand(redis, "HGET %s is_group", meta_key.c_str());
+    redisReply* reply4 = (redisReply*)redis_command(redis, "HGET %s is_group", meta_key.c_str());
     bool is_group = (reply4 && reply4->type == REDIS_REPLY_STRING && string(reply4->str) == "1");
     if (reply4) freeReplyObject(reply4);
 
@@ -183,20 +184,18 @@ void notify_reciver(redisContext* redis, const string& file_id) {
        cout << "notify_reciver called, is_group=" << is_group << endl;
     if (!is_group) {
        
-       auto it = name_to_fd.find(target);
+       int target_fd = find_client_fd_by_name(target);
 
-if (it != name_to_fd.end()) {
-
-    int target_fd = it->second;
+if (target_fd != -1) {
 
     cout << "====================================" << endl;
     cout << "FILE NOTIFY DEBUG" << endl;
     cout << "target username = [" << target << "]" << endl;
     cout << "target fd       = " << target_fd << endl;
 
-    auto client_it = clients.find(target_fd);
+    auto client_it = get_client(target_fd);
 
-    if (client_it == clients.end()) {
+    if (!client_it) {
 
         cerr << "ERROR: target fd not found in clients"
              << endl;
@@ -204,18 +203,18 @@ if (it != name_to_fd.end()) {
     } else {
 
         cout << "actual client username = ["
-             << client_it->second.username
+             << client_it->username
              << "]" << endl;
 
         cout << "logged_in = "
-             << client_it->second.logged_in
+             << client_it->logged_in
              << endl;
 
         cout << "handshake = "
-             << client_it->second.handshak_down
+             << client_it->handshak_down
              << endl;
 
-        if (client_it->second.username != target) {
+        if (client_it->username != target) {
 
             cerr << "!!! USERNAME -> FD MAPPING ERROR !!!"
                  << endl;
@@ -224,7 +223,7 @@ if (it != name_to_fd.end()) {
                  << target_fd << endl;
 
             cerr << "but clients[" << target_fd << "].username = "
-                 << client_it->second.username
+                 << client_it->username
                  << endl;
         }
         else {
@@ -249,7 +248,7 @@ else {
          << "]"
          << endl;
 
-    redisCommand(
+    redis_command(
         redis,
         "RPUSH %s %s",
         ("offline:" + target).c_str(),
@@ -266,17 +265,17 @@ cout << "========== STORE FILE HISTORY DONE ==========" << endl;
 }
     }  else {
     string members_key = "group:" + target+":members:";
-    redisReply* members_reply = (redisReply*)redisCommand(redis, "SMEMBERS %s", members_key.c_str());
+    redisReply* members_reply = (redisReply*)redis_command(redis, "SMEMBERS %s", members_key.c_str());
     if (members_reply && members_reply->type == REDIS_REPLY_ARRAY) {
         for(size_t i=0;i<members_reply->elements;i++)
         {
         string member = members_reply->element[i]->str;
-        auto it = name_to_fd.find(member);
-        if (it != name_to_fd.end()) {
-            send_message(it->second, notify_msg);
+        int member_fd = find_client_fd_by_name(member);
+        if (member_fd != -1) {
+            send_message(member_fd, notify_msg);
             store_history(sender,member,notify_msg);
         } else {
-            redisCommand(redis, "RPUSH %s %s", ("offline:" + member).c_str(), notify_msg.c_str());
+            redis_command(redis, "RPUSH %s %s", ("offline:" + member).c_str(), notify_msg.c_str());
             store_history(sender,member,notify_msg);
         }
     }
@@ -305,11 +304,11 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
 {
     string is_group="0";
     string key1="friends:"+sender;
-    redisReply*reply1=(redisReply*)redisCommand(redis,"SISMEMBER %s %s",key1.c_str(),target.c_str());
+    redisReply*reply1=(redisReply*)redis_command(redis,"SISMEMBER %s %s",key1.c_str(),target.c_str());
     if(!reply1||reply1->type!=REDIS_REPLY_INTEGER||reply1->integer==0)
     {
         string key2="group:"+target+":members:";
-         redisReply*reply2=(redisReply*)redisCommand(redis,"SISMEMBER %s %s",key2.c_str(),sender.c_str());
+         redisReply*reply2=(redisReply*)redis_command(redis,"SISMEMBER %s %s",key2.c_str(),sender.c_str());
           if(!reply2||reply2->type!=REDIS_REPLY_INTEGER||reply2->integer==0)
           {
            send_message(fd,"不是好友也不是群成员，不能发送文件\n");
@@ -344,7 +343,7 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
      << ", filename=" << filename 
      << ", filesize=" << Size << endl;
     string key="file:meta:"+file_id;
-    redisReply*reply=(redisReply*)redisCommand(redis,"HSET %s sender %s target %s filename %s is_group %s filesize %llu status uploading",key.c_str(),sender.c_str(),target.c_str(),filename.c_str(),is_group.c_str(),(unsigned long long)Size);
+    redisReply*reply=(redisReply*)redis_command(redis,"HSET %s sender %s target %s filename %s is_group %s filesize %llu status uploading",key.c_str(),sender.c_str(),target.c_str(),filename.c_str(),is_group.c_str(),(unsigned long long)Size);
     if(!reply||reply->type!=REDIS_REPLY_INTEGER)
     {
        
@@ -365,7 +364,7 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
         return;
     }
     freeReplyObject(reply);
-    redisReply*reply2=(redisReply*)redisCommand(redis,"SET file:progress:%s 0",file_id.c_str());
+    redisReply*reply2=(redisReply*)redis_command(redis,"SET file:progress:%s 0",file_id.c_str());
     if(!reply2||reply2->type!=REDIS_REPLY_STATUS||string(reply2->str)!="OK")
     {
         send_message(fd,"reids存储SET失败\n");
@@ -377,7 +376,7 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
     }
      freeReplyObject(reply2);
     string key2="filename_to_id:"+sender;
-    redisReply*reply3=(redisReply*)redisCommand(redis,"HSET %s %s %s",key2.c_str(),filename.c_str(),file_id.c_str());
+    redisReply*reply3=(redisReply*)redis_command(redis,"HSET %s %s %s",key2.c_str(),filename.c_str(),file_id.c_str());
      if(!reply3||reply3->type!=REDIS_REPLY_INTEGER)
     {
        
@@ -396,14 +395,22 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
 }
 
 void send_next_chunk(int fd) {
-    auto it = file_contexts.find(fd);
-    if (it == file_contexts.end()) return;
-    auto& ctx = it->second;
+    lock_guard<recursive_mutex> file_lock(file_mutex);
+
+    auto client = get_client(fd);
+    if (!client) return;
+    lock_guard<recursive_mutex> client_lock(*client->state_mutex);
+
+    auto fit = file_contexts.find(fd);
+    if (fit == file_contexts.end()) return;
+    auto& ctx = fit->second;
     if (ctx.download_state != DOWNLOAD_SENDING) return;
 
-    const size_t CHUNK_SIZE = 64 * 1024;
+    constexpr size_t CHUNK_SIZE = 64 * 1024;
+    constexpr size_t MAX_BYTES_PER_EVENT = 256 * 1024;
+    size_t budget = MAX_BYTES_PER_EVENT;
 
-    while (true) {
+    while (budget > 0) {
         if (ctx.chunk_sent >= ctx.download_chunk.size()) {
             ctx.download_chunk.clear();
             ctx.chunk_sent = 0;
@@ -412,7 +419,6 @@ void send_next_chunk(int fd) {
             ssize_t bytes_read = read(ctx.download_file_fd, data.data(), CHUNK_SIZE);
             if (bytes_read > 0) {
                 data.resize(static_cast<size_t>(bytes_read));
-
                 const size_t body_len = 1 + 16 + 8 + data.size();
                 if (body_len > UINT32_MAX) {
                     close_connection(fd);
@@ -424,10 +430,9 @@ void send_next_chunk(int fd) {
                 memcpy(ctx.download_chunk.data(), &net_len, 4);
                 ctx.download_chunk[4] = static_cast<char>(0x83);
 
-                string file_id = ctx.file_id;
                 char file_id_buf[16];
                 memset(file_id_buf, ' ', sizeof(file_id_buf));
-                memcpy(file_id_buf, file_id.data(), min(file_id.size(), sizeof(file_id_buf)));
+                memcpy(file_id_buf, ctx.file_id.data(), min(ctx.file_id.size(), sizeof(file_id_buf)));
                 memcpy(ctx.download_chunk.data() + 5, file_id_buf, 16);
 
                 uint64_t net_offset = htobe64(ctx.download_offset + ctx.total_sent);
@@ -447,13 +452,14 @@ void send_next_chunk(int fd) {
         }
 
         const size_t remain = ctx.download_chunk.size() - ctx.chunk_sent;
+        const size_t to_write = min(remain, budget);
         const char* data = ctx.download_chunk.data() + ctx.chunk_sent;
-        ssize_t n = tls_write(fd, data, remain);
+        ssize_t n = tls_write(fd, data, to_write);
 
         if (n > 0) {
             ctx.chunk_sent += static_cast<size_t>(n);
+            budget -= static_cast<size_t>(n);
             if (ctx.chunk_sent == ctx.download_chunk.size()) {
-              
                 const size_t payload_len = ctx.download_chunk.size() - 4 - 1 - 16 - 8;
                 ctx.total_sent += payload_len;
                 ctx.download_chunk.clear();
@@ -463,7 +469,7 @@ void send_next_chunk(int fd) {
         }
 
         if (n == -2 || n == -3) {
-            struct epoll_event ev{};
+            epoll_event ev{};
             ev.events = EPOLLIN | EPOLLOUT;
             ev.data.fd = fd;
             epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
@@ -473,7 +479,13 @@ void send_next_chunk(int fd) {
         close_connection(fd);
         return;
     }
+
+    epoll_event ev{};
+    ev.events = EPOLLIN | EPOLLOUT;
+    ev.data.fd = fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 }
+
 
 void process(int fd,redisContext*redis,const vector<char>&buf)
 {
@@ -501,7 +513,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
         const char* data = buf.data() + 1 + 16 + 8;
     cout << "DEBUG: Entering completion block" << endl;
    string meta_key = "file:meta:" + file_id;
-    redisReply* reply1 = (redisReply*)redisCommand(redis, "HGET %s status", meta_key.c_str());
+    redisReply* reply1 = (redisReply*)redis_command(redis, "HGET %s status", meta_key.c_str());
     if (!reply1 || reply1->type != REDIS_REPLY_STRING || string(reply1->str) != "uploading") {
         send_message(fd, "文件状态无效或未上传\n");
         if (reply1) freeReplyObject(reply1);
@@ -510,7 +522,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     }
     freeReplyObject(reply1);
 
-    redisReply* reply2 = (redisReply*)redisCommand(redis, "HGET %s filesize", meta_key.c_str());
+    redisReply* reply2 = (redisReply*)redis_command(redis, "HGET %s filesize", meta_key.c_str());
     if (!reply2 || reply2->type != REDIS_REPLY_STRING) {
         send_message(fd, "获取文件大小失败\n");
         if (reply2) freeReplyObject(reply2);
@@ -522,7 +534,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     freeReplyObject(reply2);
 
     string progress_key = "file:progress:" + file_id; 
-    redisReply* reply3 = (redisReply*)redisCommand(redis, "GET %s", progress_key.c_str());
+    redisReply* reply3 = (redisReply*)redis_command(redis, "GET %s", progress_key.c_str());
     if (!reply3 || reply3->type != REDIS_REPLY_STRING) {
         send_message(fd, "获取进度失败\n");
         if (reply3) freeReplyObject(reply3);
@@ -558,7 +570,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
         return;
     }
 
-    redisReply* reply4 = (redisReply*)redisCommand(redis, "INCRBY %s %d", progress_key.c_str(), data_len);
+    redisReply* reply4 = (redisReply*)redis_command(redis, "INCRBY %s %d", progress_key.c_str(), data_len);
     if (!reply4 || reply4->type != REDIS_REPLY_INTEGER) {
         send_message(fd, "更新进度失败\n");
         if (reply4) freeReplyObject(reply4);
@@ -583,9 +595,9 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
 }
 cout << "DEBUG: rename result:success"  << endl;
     
-        redisCommand(redis, "HSET %s status complete", meta_key.c_str());
+        redis_command(redis, "HSET %s status complete", meta_key.c_str());
        
-        redisCommand(redis, "DEL %s", progress_key.c_str());
+        redis_command(redis, "DEL %s", progress_key.c_str());
        
         cout << "DEBUG: About to call notify_reciver" << endl;
         notify_reciver(redis, file_id);
@@ -601,7 +613,7 @@ cout << "DEBUG: rename result:success"  << endl;
     else if (cmd == 0x03) 
    {
     string meta_key = "file:meta:" + file_id;
-    redisReply* reply1 = (redisReply*)redisCommand(redis, "HGET %s status", meta_key.c_str());
+    redisReply* reply1 = (redisReply*)redis_command(redis, "HGET %s status", meta_key.c_str());
     if (!reply1 || reply1->type != REDIS_REPLY_STRING || string(reply1->str) != "complete") 
     {
         if (reply1) freeReplyObject(reply1);
@@ -631,14 +643,17 @@ cout << "DEBUG: rename result:success"  << endl;
     close_connection(fd);
     return;
     }
-    auto& ctx = file_contexts[fd];
-    ctx.file_id = file_id;
-    ctx.download_state = DOWNLOAD_SENDING;
-    ctx.download_file_fd = file_fd;
-    ctx.download_offset = offset;
-    ctx.total_sent = 0;
-    ctx.download_chunk.clear();
-    ctx.chunk_sent = 0;
+    {
+        lock_guard<recursive_mutex> file_lock(file_mutex);
+        auto& ctx = file_contexts[fd];
+        ctx.file_id = file_id;
+        ctx.download_state = DOWNLOAD_SENDING;
+        ctx.download_file_fd = file_fd;
+        ctx.download_offset = offset;
+        ctx.total_sent = 0;
+        ctx.download_chunk.clear();
+        ctx.chunk_sent = 0;
+    }
 
     send_next_chunk(fd);
    
@@ -653,6 +668,8 @@ cout << "DEBUG: rename result:success"  << endl;
 
 void on_file_data(int fd, redisContext* redis)
 {
+    lock_guard<recursive_mutex> file_lock(file_mutex);
+
     cerr << "[FILE] on_file_data fd=" << fd << endl;
 
     auto fit = file_contexts.find(fd);
@@ -868,8 +885,7 @@ void on_file_data(int fd, redisContext* redis)
                     packet
                 );
 
-                if (clients.find(fd) ==
-                    clients.end()) {
+                if (!get_client(fd)) {
 
                     return;
                 }
@@ -907,45 +923,46 @@ void on_file_data(int fd, redisContext* redis)
 }
 
 void on_file_connection(int fd, bool connected) {
-    cerr << "on_file_connection: fd=" << fd << ", connected=" << connected << endl;
+    lock_guard<recursive_mutex> file_lock(file_mutex);
+
+    cerr << "on_file_connection: fd=" << fd
+         << ", connected=" << connected << endl;
+
     if (connected) {
-      file_contexts[fd] = FILETRANSFER();
-        file_contexts[fd].state = PARSE_HEADER;
-        file_contexts[fd].header_bytes = 0;
-        file_contexts[fd].total_len = 0;
-        file_contexts[fd].buffer.clear();
-        file_contexts[fd].file_id = "";
-        file_contexts[fd].tmp_fd = -1;
-        file_contexts[fd].download_state = DOWNLOAD_IDLE;
-        file_contexts[fd].download_file_fd = -1;
-        file_contexts[fd].download_offset = 0;
-        file_contexts[fd].total_sent = 0;
-        file_contexts[fd].download_chunk.clear();
-        file_contexts[fd].chunk_sent = 0;
+        FILETRANSFER ctx{};
+        ctx.state = PARSE_HEADER;
+        ctx.header_bytes = 0;
+        ctx.total_len = 0;
+        ctx.tmp_fd = -1;
+        ctx.download_state = DOWNLOAD_IDLE;
+        ctx.download_file_fd = -1;
+        ctx.download_offset = 0;
+        ctx.total_sent = 0;
+        ctx.chunk_sent = 0;
+        file_contexts[fd] = std::move(ctx);
         return;
     }
 
     auto it = file_contexts.find(fd);
     if (it == file_contexts.end()) return;
 
-    string file_id = it->second.file_id;
-    if (!file_id.empty()) {
-        
-        if (it->second.tmp_fd != -1) {
-            close(it->second.tmp_fd);
-
-        }
+    if (it->second.tmp_fd != -1) {
+        close(it->second.tmp_fd);
+        it->second.tmp_fd = -1;
     }
 
-    
+    if (it->second.download_file_fd != -1) {
+        close(it->second.download_file_fd);
+        it->second.download_file_fd = -1;
+    }
+
     file_contexts.erase(it);
 }
 
 
-
 void Resend_file(int fd,const string&sender, const string& filename, redisContext* redis) {
    string key1="filename_to_id:"+sender;
-   redisReply*reply2=(redisReply*)redisCommand(redis,"HGET %s %s",key1.c_str(),filename.c_str());
+   redisReply*reply2=(redisReply*)redis_command(redis,"HGET %s %s",key1.c_str(),filename.c_str());
    if(!reply2||reply2->type!=REDIS_REPLY_STRING)
    {
     send_message(fd,"查找file_id失败\n");
@@ -958,14 +975,14 @@ void Resend_file(int fd,const string&sender, const string& filename, redisContex
    string file_id=string(reply2->str);
    freeReplyObject(reply2);
     string meta_key = "file:meta:" + file_id;
-    redisReply* reply1 = (redisReply*)redisCommand(redis, "EXISTS %s", meta_key.c_str());
+    redisReply* reply1 = (redisReply*)redis_command(redis, "EXISTS %s", meta_key.c_str());
     if (!reply1 || reply1->type != REDIS_REPLY_INTEGER || reply1->integer != 1) {
         send_message(fd, "找不到该文件\n");
         if (reply1) freeReplyObject(reply1);
         return;
     }
     freeReplyObject(reply1);
-    redisReply*reply3=(redisReply*)redisCommand(redis,"HGET %s status",meta_key.c_str());
+    redisReply*reply3=(redisReply*)redis_command(redis,"HGET %s status",meta_key.c_str());
     if(!reply3||reply3->type!=REDIS_REPLY_STRING)
     {
         send_message(fd,"网络错误\n");
@@ -989,7 +1006,7 @@ void Resend_file(int fd,const string&sender, const string& filename, redisContex
     }
     freeReplyObject(reply3);
     string progress_key = "file:progress:" + file_id;   // 修正冒号
-    redisReply* reply = (redisReply*)redisCommand(redis, "GET %s", progress_key.c_str());
+    redisReply* reply = (redisReply*)redis_command(redis, "GET %s", progress_key.c_str());
     if (!reply) {
         send_message(fd, "网络错误，无法获取进度\n");
         return;

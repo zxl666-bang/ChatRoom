@@ -1360,6 +1360,8 @@ int main(int argc, char* argv[])
     if (!get_args(target)) return 0;
 
     cout << "请输入消息内容，每行一条，输入 finish 结束：\n";
+    string msg1= "私聊 " + target + " " + "begin" + "\n";
+     SSL_write1(ssl, msg1.c_str(), msg1.size());
     int blank_count = 0;   // 连续空白计数
     {
         lock_guard<mutex> lock(menu_lock);
@@ -1370,7 +1372,8 @@ int main(int argc, char* argv[])
             {
         lock_guard<mutex> lock(menu_lock);
         menu=true;
-         
+        string msg = "私聊 " + target + " " + content + "\n";
+        SSL_write1(ssl, msg.c_str(), msg.size());
     }
             break;
         }

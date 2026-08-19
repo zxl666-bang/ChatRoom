@@ -11,42 +11,72 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <mutex>
 #include <map>
 #include <string>
-#include<set>
-#include <openssl/ssl.h>      // 核心 SSL/TLS 函数，如 SSL_new、SSL_read、SSL_write
-#include <openssl/err.h>      // 错误处理，如 ERR_print_errors_fp、ERR_get_error
-#include <openssl/crypto.h>  
+#include <set>
+#include <memory>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/crypto.h>
 #include <hiredis/hiredis.h>
 #include <leveldb/db.h>
-#include<vector>
+#include <vector>
+#include <cstdint>
+#include <atomic>
+#include <shared_mutex>
+#include <memory>
+
 using namespace std;
- struct Client 
-{
-    int fd;
+
+struct Client {
+    int fd = -1;
     string username;
-    bool logged_in;
-   SSL*ssl;
-   bool handshak_down;
-   string send_buffer;   // 待发送数据
-    size_t send_offset;   // 已发送位置
+    bool logged_in = false;
+    SSL* ssl = nullptr;
+    bool handshak_down = false;
+
+    // Only the epoll thread performs SSL_read/SSL_write.
+    // Worker threads only append to the outgoing buffer.
+    string send_buffer;
+    size_t send_offset = 0;
     string recv_buffer;
+
+    // Stable per-client synchronization objects. shared_ptr keeps Client copyable.
+    shared_ptr<recursive_mutex> state_mutex = make_shared<recursive_mutex>();
+    shared_ptr<recursive_mutex> send_mutex = make_shared<recursive_mutex>();
+    shared_ptr<recursive_mutex> io_mutex = make_shared<recursive_mutex>();
+    shared_ptr<recursive_mutex> route_mutex = make_shared<recursive_mutex>();
+
+    atomic<bool> closing{false};
+    uint64_t generation = 0;
 };
-extern map<string,vector<string>>offlinemsg;
+
+extern mutex file_clients_mtu;
+extern map<string,vector<string>> offlinemsg;
 void store_history(const string&sender,const string&place,const string&content);
-extern std::map<int, Client> clients;
+
+extern std::map<int, std::shared_ptr<Client>> clients;
 extern map<string, int> name_to_fd;
 extern set<int> file_client_fds;
+extern std::recursive_mutex file_mutex;
 extern SSL*ssl;
 extern int epoll_fd;
-ssize_t  tls_write(int fd,const void*data,size_t size);
+extern redisContext* redis_conn;
+
+// Thread-safe hiredis wrapper. All server/file-transfer Redis calls should use it.
+redisReply* redis_command(redisContext* c, const char* fmt, ...);
+shared_ptr<Client> get_client(int fd);
+int find_client_fd_by_name(const string& name);
+
+ssize_t tls_write(int fd,const void*data,size_t size);
 ssize_t tls_read(int fd,void*data,size_t size);
 void lixian(int fd);
 void Read(int fd);
 void close_connection(int fd);
 void flush_send_buffer(int fd);
 void send_message(int fd, const std::string& msg);
-void siliao(int sender_fd, const string& target_name, const string& content) ;
+void siliao(int sender_fd, const string& target_name, const string& content);
 void qunliao(int sender_fd, const string& qun, const string& content);
 void xitongbobao(const string&name,const string&msg);
 bool is_friend(const string& user, const string& target);
