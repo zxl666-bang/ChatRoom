@@ -43,6 +43,33 @@ mutex error_mtu;
 bool is_upload=false;
 mutex upload_mtu;
 size_t wrong=0;
+char*ip;
+string simplifyPath(string path) {
+        vector<string> stack;
+        string component;
+        
+        path += '/';
+        
+        for (char ch : path) {
+            if (ch == '/') {
+                if (component == "..") {
+                    if (!stack.empty()) stack.pop_back();
+                } else if (!component.empty() && component != ".") {
+                    stack.push_back(component);
+                }
+                component.clear();  
+            } else {
+                component += ch;
+            }
+        }
+        
+        if (stack.empty()) return "/";
+        string result;
+        for (const string& dir : stack) {
+            result += "/" + dir;
+        }
+        return result;
+    }
 void send_menu()
 {
     cerr << "send_menu called" << endl;
@@ -186,7 +213,7 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(8889);
 
-    if (inet_pton(AF_INET,"127.0.0.1",&addr.sin_addr) != 1) {
+    if (inet_pton(AF_INET,ip,&addr.sin_addr) != 1) {
 
         cerr << "服务器地址错误" << endl;
 
@@ -498,7 +525,7 @@ void start_download(const string& file_id, const string& filepath) {
     struct sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(8889);
-    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
         cerr << "服务器地址错误" << endl;
         close(file_sock);
         return;
@@ -931,7 +958,7 @@ int main(int argc, char* argv[])
         cerr << "Usage: ./chat_client <server_ip> <port>" << endl;
         return 1;
     }
-    const char* ip = argv[1];
+     ip = argv[1];
     int port = atoi(argv[2]);
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr;
@@ -1742,7 +1769,7 @@ if(!get_args(filepath))
     }
    size_t end = filepath.find_last_not_of(" \t\r\n");
     filepath = filepath.substr(start, end - start + 1);
-
+    filepath=simplifyPath(filepath);
     if (filepath.empty()) {
         cout<<"filepath不能为空\n";
          cout << "用法: /26 <目标> <文件路径>\n";
@@ -1798,6 +1825,7 @@ if(!get_args(filepath))
     size_t sep_pos = filepath.find_last_of("/\\");
     string filename = (sep_pos != string::npos) ? filepath.substr(sep_pos + 1) : filepath;
     pending_file_path = filepath;
+    filename=simplifyPath(filename);
     string cmd = "RESUME_UPLOAD " + filename + "\n";
     SSL_write1(ssl, cmd.c_str(), cmd.size());
     cout << "续传请求已发送，等待服务端响应...\n";
