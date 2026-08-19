@@ -1759,7 +1759,6 @@ if(!get_args(filepath))
                {
                 return 0;
                }
-    // 去除前导空格和尾部空格
    size_t start = filepath.find_first_not_of(" \t\r\n");
     if (start == string::npos) {
         cout<<"name不能为空\n";
@@ -1776,7 +1775,7 @@ if(!get_args(filepath))
          send_menu();
         continue;
     }
-
+    cerr<<"filepath:"<<filepath<<endl;
     ifstream file(filepath, ios::binary | ios::ate);
     if (!file.is_open()) {
         cout<<"file打不开"<<endl;
