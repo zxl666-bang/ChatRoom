@@ -215,7 +215,7 @@ void notify_reciver(redisContext* redis, const string& file_id) {
             }
         }
         if (members_reply) freeReplyObject(members_reply);
-    
+        
 }
 }
 
@@ -263,13 +263,7 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
   
     string filepath=path+file_id+".tmp";
    
-   int nfd=open(filepath.c_str(),O_CREAT|O_WRONLY|O_TRUNC,0644);
-   if(nfd<0)
-   {
-    send_message(fd,"创建临时文件失败\n");
-    return;
-   }
-   close(nfd);
+   
    cout << "handle_file_command: sender=" << sender 
      << ", target=" << target 
      << ", filename=" << filename 
@@ -327,7 +321,7 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
 }
 
 void send_next_chunk(int fd) {
-    lock_guard<recursive_mutex> file_lock(file_mutex);
+    
 
     auto client = get_client(fd);
     if (!client) return;
@@ -429,6 +423,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     close_connection(fd);
     return;
 }
+    auto& ctx=file_contexts[fd];
     uint8_t cmd = buf[0];
     char file_id_buf[17] = {0};
     memcpy(file_id_buf, buf.data() + 1, 16);
@@ -485,18 +480,18 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     }
 
     string filename = get_filename_meta(file_id, redis);
-
-    string tmp_path = "./files/" + file_id + ".tmp";
-    int tmp_fd = open(tmp_path.c_str(), O_WRONLY);
-    if (tmp_fd < 0) {
+      string tmp_path = "./files/" + file_id + ".tmp";
+    if(ctx.tmp_fd==-1)
+    {
+      
+    ctx.tmp_fd = open(tmp_path.c_str(), O_WRONLY|O_CREAT,0644);
+    if (ctx.tmp_fd < 0) {
         send_message(fd, "打开临时文件失败\n");
        close_connection(fd);
         return;
-    }
-    lseek(tmp_fd, offset, SEEK_SET);
-    ssize_t written = write(tmp_fd, data, data_len);
-    close(tmp_fd);
-
+    }}
+    lseek(ctx.tmp_fd, offset, SEEK_SET);
+    ssize_t written = write(ctx.tmp_fd, data, data_len);
     if (written != (ssize_t)data_len) {
         send_message(fd, "写入数据失败\n");
       close_connection(fd);
@@ -527,7 +522,11 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     return;
 }
 cout << "DEBUG: rename result:success"  << endl;
-    
+    if(ctx.tmp_fd!=-1)
+    {
+        close(ctx.tmp_fd);
+        ctx.tmp_fd=-1;
+    }
       redis_command(redis, "HSET %s status complete", meta_key.c_str());
     redis_command(redis, "DEL %s", progress_key.c_str());
     string complete_msg = "UPLOAD_COMPLETE " + file_id + "\n";
@@ -535,7 +534,6 @@ cout << "DEBUG: rename result:success"  << endl;
     cout << "DEBUG: About to call notify_reciver" << endl;
     notify_reciver(redis, file_id);
     cout << "Upload complete, notifying receiver..." << endl;
-
     return;
 
     }
@@ -620,10 +618,16 @@ void on_file_data(int fd, redisContext* redis)
         return;
     }
 
-    char buf[16 * 1024];
+    const int max_bags=5;
+    int packet_process=0;
+    char buf[64 * 1024];
 
     while (true) {
-
+        if(packet_process>=max_bags)
+        {
+            cerr<<"已达最大包装处理数"<<endl;
+            break;
+        }
         ssize_t n = tls_read(
             fd,
             buf,
@@ -817,7 +821,7 @@ void on_file_data(int fd, redisContext* redis)
                     redis,
                     packet
                 );
-
+                packet_process++;
                 if (!get_client(fd)) {
 
                     return;
@@ -888,7 +892,6 @@ void on_file_connection(int fd, bool connected) {
         close(it->second.download_file_fd);
         it->second.download_file_fd = -1;
     }
-
     file_contexts.erase(it);
 }
 
