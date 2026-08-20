@@ -2432,6 +2432,22 @@ void shanchenyuan(int ufd,const string&group,const string&name)
         return;
     }
     freeReplyObject(reply1);
+    string key3="group:"+group;
+    redisReply*reply3=(redisReply*)redisCommand(redis_conn,"HGET %s owner",key3.c_str());
+    if(reply3&&reply3->type==REDIS_REPLY_STRING&&reply3->str==name)
+    {
+        send_message(ufd,"不能删除群主\n");
+        if(reply3)
+
+        {
+            freeReplyObject(reply3);
+        }
+        return;
+    }
+    if(reply3)
+    {
+        freeReplyObject(reply3);
+    }
     redisReply*reply2=(redisReply*)redis_command(redis_conn,"SREM %s %s",key1.c_str(),name.c_str());
     if(reply2==nullptr)
     {
