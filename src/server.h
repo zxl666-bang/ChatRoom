@@ -3,6 +3,8 @@
 
 #include <curl/curl.h>
 #include <cstring>
+#include <deque>
+#include <functional>
 #include <leveldb/options.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -49,6 +51,9 @@ struct Client {
 
     atomic<bool> closing{false};
     uint64_t generation = 0;
+    pmr::deque<function<void()>>task;
+    mutex task_lock;
+    bool is_process;
 };
 
 extern mutex file_clients_mtu;
@@ -80,4 +85,5 @@ void qunliao(int fd,const string&qun,const string&content);
 void qunliao(int sender_fd, const string& qun, const string& content);
 void xitongbobao(const string&name,const string&msg);
 bool is_friend(const string& user, const string& target);
+void send_pending_data(int fd);   // 只发送缓冲区数据，不修改 epoll 事件
 #endif

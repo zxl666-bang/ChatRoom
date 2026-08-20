@@ -593,7 +593,7 @@ void start_download(const string& file_id, const string& filepath) {
     while (true) {
         uint32_t net_total_len = 0;
         if (!SSL_read_all(ssl2, &net_total_len, sizeof(net_total_len))) {
-            // 正常下载结束也可能通过 TLS close_notify 表示 EOF.
+            cerr << "DOWNLOAD: SSL_read_all for length returned false, maybe EOF or error" << endl;
             break;
         }
 
@@ -654,7 +654,8 @@ void start_download(const string& file_id, const string& filepath) {
     close(file_sock);
 
     if (success) {
-        cerr << "文件下载完成" << endl;
+     cerr << "文件下载完成，大小=" << local_size << " 字节" << endl;
+cerr.flush();
     } else {
         cerr << "文件下载中断" << endl;
     }
@@ -1841,10 +1842,11 @@ if(!get_args(filepath))
         continue;
     }
     file.close();  
+    filepath=simplifyPath(filepath);
     size_t sep_pos = filepath.find_last_of("/\\");
     string filename = (sep_pos != string::npos) ? filepath.substr(sep_pos + 1) : filepath;
     pending_file_path = filepath;
-    filename=simplifyPath(filename);
+    
     string cmd = "RESUME_UPLOAD " + filename + "\n";
     SSL_write1(ssl, cmd.c_str(), cmd.size());
     cout << "续传请求已发送，等待服务端响应...\n";

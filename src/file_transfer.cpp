@@ -321,15 +321,17 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
 }
 
 void send_next_chunk(int fd) {
-    
-
+      cerr << "[SEND] send_next_chunk called, fd=" << fd << endl;
     auto client = get_client(fd);
-    if (!client) return;
+    if (!client) { cerr << "[SEND] no client" << endl; return; }
     lock_guard<recursive_mutex> client_lock(*client->state_mutex);
 
     auto fit = file_contexts.find(fd);
     if (fit == file_contexts.end()) return;
     auto& ctx = fit->second;
+     cerr << "[SEND] download_state=" << ctx.download_state 
+         << ", total_sent=" << ctx.total_sent << endl;
+    cerr.flush();
     if (ctx.download_state != DOWNLOAD_SENDING) return;
 
     constexpr size_t CHUNK_SIZE = 64 * 1024;
@@ -337,13 +339,17 @@ void send_next_chunk(int fd) {
     size_t budget = MAX_BYTES_PER_EVENT;
 
     while (budget > 0) {
+        
         if (ctx.chunk_sent >= ctx.download_chunk.size()) {
+             cerr << "[SEND] reading next chunk, offset=" << ctx.download_offset + ctx.total_sent << endl;
+            cerr.flush();
             ctx.download_chunk.clear();
             ctx.chunk_sent = 0;
 
             vector<char> data(CHUNK_SIZE);
             ssize_t bytes_read = read(ctx.download_file_fd, data.data(), CHUNK_SIZE);
             if (bytes_read > 0) {
+                  cerr << "[SEND] read " << bytes_read << " bytes" << endl;
                 data.resize(static_cast<size_t>(bytes_read));
                 const size_t body_len = 1 + 16 + 8 + data.size();
                 if (body_len > UINT32_MAX) {
@@ -365,12 +371,18 @@ void send_next_chunk(int fd) {
                 memcpy(ctx.download_chunk.data() + 21, &net_offset, 8);
                 memcpy(ctx.download_chunk.data() + 29, data.data(), data.size());
             } else if (bytes_read == 0) {
-                close(ctx.download_file_fd);
-                ctx.download_file_fd = -1;
-                ctx.download_state = DOWNLOAD_IDLE;
-                close_connection(fd);
-                return;
+                 cerr << "[SEND] EOF" << endl;
+                 cerr << "DOWNLOAD: file read EOF, total_sent = " << ctx.total_sent << " bytes" << endl;
+                ctx.file_read_done=true;
+                  if (ctx.download_chunk.empty() && ctx.chunk_sent == 0) {
+        close(ctx.download_file_fd);
+        ctx.download_file_fd = -1;
+        ctx.download_state = DOWNLOAD_IDLE;
+        close_connection(fd);
+        return;
+    }
             } else {
+                 cerr << "[SEND] read error: " << strerror(errno) << endl;
                 perror("read file error");
                 close_connection(fd);
                 return;
@@ -381,31 +393,41 @@ void send_next_chunk(int fd) {
         const size_t to_write = min(remain, budget);
         const char* data = ctx.download_chunk.data() + ctx.chunk_sent;
         ssize_t n = tls_write(fd, data, to_write);
-
+         cerr << "[SEND] tls_write returned " << n << endl;
         if (n > 0) {
             ctx.chunk_sent += static_cast<size_t>(n);
             budget -= static_cast<size_t>(n);
-            if (ctx.chunk_sent == ctx.download_chunk.size()) {
+            if (ctx.chunk_sent >= ctx.download_chunk.size()) {
                 const size_t payload_len = ctx.download_chunk.size() - 4 - 1 - 16 - 8;
                 ctx.total_sent += payload_len;
                 ctx.download_chunk.clear();
                 ctx.chunk_sent = 0;
+                if (ctx.file_read_done) {
+        close(ctx.download_file_fd);
+        ctx.download_file_fd = -1;
+        ctx.download_state = DOWNLOAD_IDLE;
+        close_connection(fd);
+        return;
+    }
             }
             continue;
         }
-
         if (n == -2 || n == -3) {
+            cerr << "[SEND] WANT_READ/WANT_WRITE, mod epoll" << endl;
             epoll_event ev{};
             ev.events = EPOLLIN | EPOLLOUT;
             ev.data.fd = fd;
             epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
             return;
         }
-
-        close_connection(fd);
-        return;
+        else {
+            cerr << "[SEND] tls_write error, closing" << endl;
+            close_connection(fd);
+            return;
+        }
+          
     }
-
+    cerr << "[SEND] budget exhausted, mod epoll" << endl;
     epoll_event ev{};
     ev.events = EPOLLIN | EPOLLOUT;
     ev.data.fd = fd;
@@ -566,7 +588,14 @@ cout << "DEBUG: rename result:success"  << endl;
         close_connection(fd);
         return;
     }
-
+   off_t actual_size = lseek(file_fd, 0, SEEK_END);
+    if (actual_size == -1) {
+        perror("lseek to end");
+        close(file_fd);
+        close_connection(fd);
+        return;
+    }
+    cerr << "DOWNLOAD: actual file size = " << actual_size << " bytes" << endl;
    if (lseek(file_fd, offset, SEEK_SET) == -1) 
    {
     perror("lseek");
@@ -584,6 +613,7 @@ cout << "DEBUG: rename result:success"  << endl;
         ctx.total_sent = 0;
         ctx.download_chunk.clear();
         ctx.chunk_sent = 0;
+        ctx.file_read_done=false;
     }
 
     send_next_chunk(fd);

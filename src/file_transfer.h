@@ -34,6 +34,7 @@ struct FILETRANSFER {
     size_t total_sent = 0;
     vector<char> download_chunk;
     size_t chunk_sent = 0;
+    bool file_read_done=false;
 };
 
 extern std::map<std::string, std::string> filename_to_file_id;

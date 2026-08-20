@@ -5,6 +5,7 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 #include<unordered_set>
+#include<ulimit.h>
 #ifndef my_bool
 #define my_bool unsigned char
 #endif
@@ -115,7 +116,7 @@ static recursive_mutex mysql_mutex;
 static shared_mutex clients_map_mutex;
 static recursive_mutex routing_mutex;
 static atomic<uint64_t> next_client_generation{1};
-static const size_t MAX_SEND_BUFFER = 32ULL * 1024ULL * 1024ULL;
+static const size_t MAX_SEND_BUFFER = 256ULL * 1024ULL * 1024ULL;
 static const size_t MAX_WRITE_PER_EVENT = 256ULL * 1024ULL;
 
 redisReply* redis_command(redisContext* c, const char* fmt, ...) {
@@ -3023,6 +3024,33 @@ void files(int fd)
     }
     return;
 }
+
+void send_pending_data(int fd) {
+    shared_ptr<Client> c = CLIENT(fd);
+    if (!c) return;
+    lock_guard<recursive_mutex> state_lock(*c->state_mutex);
+    lock_guard<recursive_mutex> send_lock(*c->send_mutex);
+    if (c->closing.load() || !c->ssl || !c->handshak_down) return;
+
+    while (c->send_offset < c->send_buffer.size()) {
+        const char* data = c->send_buffer.data() + c->send_offset;
+        size_t remain = c->send_buffer.size() - c->send_offset;
+        ssize_t n = tls_write(fd, data, remain);
+        if (n > 0) {
+            c->send_offset += static_cast<size_t>(n);
+            continue;
+        }
+        if (n == -2 || n == -3) {
+            // 遇到阻塞，不修改 epoll 事件
+            return;
+        }
+        close_connection(fd);
+        return;
+    }
+    // 发送完所有数据后清空缓冲区
+    c->send_buffer.clear();
+    c->send_offset = 0;
+}
 void handle_command(int fd, const string& line)
  {
     
@@ -3641,16 +3669,51 @@ void cleancurl()
 static void dispatch_command(int fd, const string& line) {
     shared_ptr<Client> client = CLIENT(fd);
     if (!client || line.empty()) return;
-    if (!g_thread_pool) return;
-    bool accepted = g_thread_pool->enqueue([fd, line, client] {
-        if (!same_client(fd, client)) return;
+    auto task=[fd,line,client]
+    {
+         if (!same_client(fd, client)) return;
         lock_guard<recursive_mutex> lk(*client->state_mutex);
         if (client->closing.load()) return;
         handle_command(fd, line);
         if (!client->closing.load() && !client->username.empty() && line.find("心跳") == string::npos)
             send_message(fd, "命令完成\n");
-    });
-    if (!accepted) send_message(fd, "服务器繁忙，请稍后重试\n");
+    };
+        bool need_schedule = false;
+    {
+        lock_guard<mutex> lock(client->task_lock);
+        client->task.push_back(std::move(task));
+        if (!client->is_process) {
+            client->is_process = true;
+            need_schedule = true;
+        }
+    }
+    if(need_schedule)
+    {
+
+  g_thread_pool->enqueue([fd, client] {
+    while(true)
+    {
+        function<void()>t;
+        {
+            lock_guard<mutex> lock(client->task_lock);
+            if(client->task.empty())
+            {
+                client->is_process=false;
+                break;
+            }
+            t=std::move(client->task.front());
+            client->task.pop_back();
+        }
+        if(t)
+        {
+            t();
+        }
+        if(CLIENT(fd))
+        {
+            break;
+        }
+    }
+    });}
 }
 
 int main() 
@@ -3836,30 +3899,25 @@ if (is_file) {
     {
         lock_guard<recursive_mutex> file_lock(file_mutex);
         auto fit = file_contexts.find(fd);
-        downloading = (fit != file_contexts.end() &&
-                       fit->second.download_state == DOWNLOAD_SENDING);
+        downloading = (fit != file_contexts.end() && fit->second.download_state == DOWNLOAD_SENDING);
     }
 
-    if ((downloading &&
-         (revents & (EPOLLIN | EPOLLOUT))) ||
-        (!downloading &&
-         (revents & EPOLLIN))) {
-
+    if ((downloading && (revents & (EPOLLIN | EPOLLOUT))) ||
+        (!downloading && (revents & EPOLLIN))) {
         on_file_data(fd, redis_conn);
     }
 
-    if (!CLIENT(fd))
-        continue;
-
+    if (!CLIENT(fd)) continue;
 
     if (revents & EPOLLOUT) {
-        flush_send_buffer(fd);
+        if (downloading) {
+            send_pending_data(fd);  
+        } else {
+            flush_send_buffer(fd);   
+        }
     }
-
     if (!CLIENT(fd))
         continue;
-
-
     if (revents & (EPOLLERR |
                    EPOLLHUP |
                    EPOLLRDHUP)) {
