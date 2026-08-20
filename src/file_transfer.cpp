@@ -181,7 +181,8 @@ void notify_reciver(redisContext* redis, const string& file_id) {
     if (reply4) freeReplyObject(reply4);
 
     string notify_msg = "FILE_NOTIFY " + sender + " " + filename + " " + file_id + " " + (is_group ? "group" : "private") + "\n";
-
+    string key="sendfiles:"+filename;
+    redis_command(redis_conn,"HSET %s sender %s target %s file_id %s",key.c_str(),sender.c_str(),target.c_str(),file_id.c_str());
     if (!is_group) {
         redis_command(redis, "RPUSH %s %s", ("files:" + target).c_str(), notify_msg.c_str());
         int target_fd = find_client_fd_by_name(target);
@@ -194,15 +195,12 @@ void notify_reciver(redisContext* redis, const string& file_id) {
         string place = (sender < target) ? sender + ":" + target : target + ":" + sender;
         store_history(sender, place, notify_msg);
     } else {
-        // 群聊
         string members_key = "group:" + target + ":members:";
         redisReply* members_reply = (redisReply*)redis_command(redis, "SMEMBERS %s", members_key.c_str());
         if (members_reply && members_reply->type == REDIS_REPLY_ARRAY) {
             for (size_t i = 0; i < members_reply->elements; ++i) {
                 string member = members_reply->element[i]->str;
-                // 1. 存入每个成员的 files 列表
                 redis_command(redis, "RPUSH %s %s", ("files:" + member).c_str(), notify_msg.c_str());
-                // 2. 发送或离线
                 int member_fd = find_client_fd_by_name(member);
                 if (member_fd != -1) {
                     send_message(member_fd, notify_msg);
@@ -210,7 +208,6 @@ void notify_reciver(redisContext* redis, const string& file_id) {
                      cerr<<"对方离线，已存储\n";
             redis_command(redis, "INCR %s", ("offlinefiles:" + target).c_str());
                 }
-                // 3. 存储历史（每个成员一条，群聊历史）
                 store_history(sender, member, notify_msg);
             }
         }
@@ -259,10 +256,59 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
           {
             freeReplyObject(reply1);
           }
-    string file_id=to_string(time(nullptr))+"_"+to_string(rand()%100000);
-  
-    string filepath=path+file_id+".tmp";
-   
+
+    string  file_id;
+    string  filepath;
+    string filename1;
+    bool is_old=false;
+          string key4="filename_to_id:"+sender;
+          redisReply*reply4=(redisReply*)redis_command(redis,"HGET %s %s",key4.c_str(),filename.c_str());
+          if(reply4&&reply4->type==REDIS_REPLY_STRING)
+          {
+           
+                file_id=reply4->str;
+                string key6="file:meta:"+file_id;
+                redisReply*reply6=(redisReply*)redis_command(redis_conn,"HGET %s filename",key6.c_str());
+                if(reply6&&reply6->type==REDIS_REPLY_STRING)
+                {
+                    filename1=reply6->str;
+                    is_old=true;
+                }
+                if(reply6)
+                {
+                    freeReplyObject(reply6);
+                }
+            }
+            
+          if(reply4)
+          {
+            freeReplyObject(reply4);
+          }
+   if(!is_old)
+   {
+    file_id=to_string(time(nullptr))+"_"+to_string(rand()%100000);
+    filepath =path+file_id+".tmp";
+   }
+   else
+   {
+    string finalpath=path+file_id+"_"+filename1;
+    filepath=path+file_id+".tmp";
+    unlink(finalpath.c_str());
+    unlink(filepath.c_str());
+    string key7="file:progress:"+file_id;
+    redis_command(redis_conn,"SET %s 0",key7.c_str());
+    string key8="file:meta:"+file_id;
+    redis_command(redis_conn,"HSET %s status uploading",key8.c_str());
+     lock_guard<recursive_mutex> lock(file_mutex);
+    for (auto it = file_contexts.begin(); it != file_contexts.end(); ++it) {
+        if (it->second.file_id == file_id && it->second.download_file_fd != -1) {
+            close(it->second.download_file_fd);
+            it->second.download_file_fd = -1;
+            it->second.download_state = DOWNLOAD_IDLE;
+            it->second.download_chunk.clear();
+        }
+    }
+   }
    
    cout << "handle_file_command: sender=" << sender 
      << ", target=" << target 

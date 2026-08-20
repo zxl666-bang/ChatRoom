@@ -3708,10 +3708,13 @@ static void dispatch_command(int fd, const string& line) {
         {
             t();
         }
-        if(CLIENT(fd))
-        {
-            break;
-        }
+          if (!CLIENT(fd)) {
+                   
+                    lock_guard<mutex> lock(client->task_lock);
+                    client->is_process = false;
+                    client->task.clear();  
+                    break;
+                }
     }
     });}
 }
