@@ -37,7 +37,7 @@ struct FILETRANSFER {
     size_t chunk_sent = 0;
     bool file_read_done=false;
     uint64_t filesize=0;
-    string status;
+    string status="";
 };
 
 extern std::map<std::string, std::string> filename_to_file_id;

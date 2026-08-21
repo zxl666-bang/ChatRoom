@@ -84,6 +84,7 @@ void siliao(int sender_fd, const string& target_name, const string& content);
 void qunliao(int fd,const string&qun,const string&content);
 void qunliao(int sender_fd, const string& qun, const string& content);
 void xitongbobao(const string&name,const string&msg);
+void jiesan(int fd,const string&qun);
 bool is_friend(const string& user, const string& target);
 void send_pending_data(int fd);   // 只发送缓冲区数据，不修改 epoll 事件
 #endif

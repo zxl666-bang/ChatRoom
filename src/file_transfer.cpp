@@ -206,7 +206,7 @@ void notify_reciver(redisContext* redis, const string& file_id) {
                     send_message(member_fd, notify_msg);
                 } else {
                      cerr<<"对方离线，已存储\n";
-            redis_command(redis, "INCR %s", ("offlinefiles:" + target).c_str());
+            redis_command(redis, "INCR %s", ("offlinefiles:" + member).c_str());
                 }
                 store_history(sender, member, notify_msg);
             }
@@ -509,11 +509,6 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
         const char* data = buf.data() + 1 + 16 + 8;
     cout << "DEBUG: Entering completion block" << endl;
  
-    if (ctx.status != "uploading") {
-        send_message(fd, "文件状态无效或未上传\n");
-        close_connection(fd);
-        return;
-    }
     
 
  /*   string progress_key = "file:progress:" + file_id; 
@@ -563,7 +558,12 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     freeReplyObject(reply2);
        ctx.upload_offset=lseek(ctx.tmp_fd,0,SEEK_END);
 }
-   
+   if (ctx.status != "uploading") {
+        send_message(fd, "文件状态无效或未上传\n");
+        close_connection(fd);
+        return;
+    }
+    
     string filepath=path+file_id+".tmp";
    /* size_t current_offset=lseek(ctx.tmp_fd,0,SEEK_END);
     if (offset != current_offset) {
@@ -850,7 +850,7 @@ void on_file_data(int fd, redisContext* redis)
                     1 + 16 + 8;
 
                 const uint32_t MAX_BODY_SIZE =
-                    HEADER_SIZE + 64 * 1024;
+                    HEADER_SIZE + 512 * 1024;
 
                 if (ctx.total_len < HEADER_SIZE ||
                     ctx.total_len > MAX_BODY_SIZE) {

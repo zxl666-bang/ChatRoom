@@ -770,6 +770,16 @@ void zhuxiao(int fd, const string& name, const string& password) {
             leveldb::Iterator* it2 = history_db->NewIterator(ro);
             for (size_t i = 0; i < reply_groups->elements; ++i) {
                 string group_name = reply_groups->element[i]->str;
+                string group_key="group:"+group_name;
+                redisReply*reply=(redisReply*)redis_command(redis_conn,"HGET %s owner",group_key.c_str());
+                if(reply&&reply->type==REDIS_REPLY_STRING&&reply->str==name)
+                {
+                    jiesan(fd,group_name);
+                }
+                if(reply)
+                {
+                    freeReplyObject(reply);
+                }
                 string prefix = "history:group:" + group_name + ":";
                 for (it2->Seek(prefix); it2->Valid() && it2->key().starts_with(prefix); it2->Next()) {
                     string key = it2->key().ToString();
@@ -835,7 +845,7 @@ void zhuxiao(int fd, const string& name, const string& password) {
                  }
                  redis_command(redis_conn, "DEL %s", ("group:" + group_name + ":members:").c_str());
                  redis_command(redis_conn, "DEL %s", ("group:" + group_name + ":guanli:").c_str());
-                redis_command(redis_conn,"DEL %s",("group:"+group_name).c_str());
+                 redis_command(redis_conn,"DEL %s",("group:"+group_name).c_str());
             }
             if(reply)
             {
@@ -1652,6 +1662,7 @@ void jiechupinbi(int ufd,const string&name)
 
 void siliao(int sender_fd, const string& target_name, const string& content) 
 {
+     cerr << "[SILIAO] sender=" << CLIENT(sender_fd)->username << " target=" << target_name << " content=" << content << endl;
     Client& c = *CLIENT(sender_fd);
     if (!c.logged_in) 
     {
@@ -2958,7 +2969,27 @@ void jiesan(int ufd,const string&qun)
     {
         send_message(ufd,"解散群聊成功\n");
         freeReplyObject(reply4);
-        return;
+if (history_db != nullptr) {
+    leveldb::ReadOptions read_opts;
+    leveldb::WriteOptions write_opts;
+    string prefix = "history:group:" + qun + ":";
+    leveldb::Iterator* it = history_db->NewIterator(read_opts);
+    vector<string> keys_to_delete;
+    
+    for (it->Seek(prefix); it->Valid() && it->key().starts_with(prefix); it->Next()) {
+        keys_to_delete.push_back(it->key().ToString());
+    }
+    
+    for (const string& key : keys_to_delete) {
+        leveldb::Status s = history_db->Delete(write_opts, key);
+        if (!s.ok()) {
+            cerr << "删除历史记录失败: " << key << " " << s.ToString() << endl;
+        }
+    }
+    
+    delete it;
+    send_message(ufd, "群历史记录已清理\n");
+}
     }
     send_message(ufd,"命令执行失败\n");
     freeReplyObject(reply4);
@@ -3214,6 +3245,7 @@ void handle_command(int fd, const string& line)
     }
     else if (cmd == "私聊")
      {
+        
         if(CLIENT(fd)->logged_in==false)
         {
             send_message(fd,"先登录\n");
@@ -3226,6 +3258,7 @@ void handle_command(int fd, const string& line)
             return; 
         }
         getline(iss, content);
+         cerr << "[PRIVATE] from " << CLIENT(fd)->username << " to " << target << " content=" << content << endl;
         size_t pos = content.find_first_not_of(" ");
         if (pos == string::npos) 
         { 
@@ -3667,6 +3700,7 @@ void cleancurl()
 
 
 static void dispatch_command(int fd, const string& line) {
+    cerr << "[DISPATCH] fd=" << fd << " line=" << line << endl;
     shared_ptr<Client> client = CLIENT(fd);
     if (!client || line.empty()) return;
     auto task=[fd,line,client]
@@ -3689,8 +3723,8 @@ static void dispatch_command(int fd, const string& line) {
     }
     if(need_schedule)
     {
-
-  g_thread_pool->enqueue([fd, client] {
+cerr << "[THREADPOOL] current queue size: " << g_thread_pool->size() << endl;
+   bool ok= g_thread_pool->enqueue([fd, client] {
     while(true)
     {
         function<void()>t;
@@ -3716,7 +3750,15 @@ static void dispatch_command(int fd, const string& line) {
                     break;
                 }
     }
-    });}
+    }
+    
+);
+ if (!ok) {
+        cerr << "[THREADPOOL] enqueue failed! Dropping background task for fd=" << fd << endl;
+        // 可考虑重试或标记错误，但当前设计下，若队列满，client->task中的任务将永远得不到处理
+        // 因为后台任务未启动，后续即使队列空闲也不会再调度了（除非有新消息触发need_schedule）
+        // 因此最好设置一个标志，在下次新消息来时重新调度
+    }}
 }
 
 int main() 
@@ -3738,8 +3780,8 @@ int main()
     init_leveldb();
     init_file_transfer(redis_conn);
     const unsigned hw = thread::hardware_concurrency() ? thread::hardware_concurrency() : 4;
-    const size_t worker_count = max<size_t>(8, min<size_t>(32, static_cast<size_t>(hw) * 2));
-    g_thread_pool = make_unique<ThreadPool>(worker_count, 20000);
+    const size_t worker_count = max<size_t>(8, min<size_t>(64, static_cast<size_t>(hw) * 2));
+    g_thread_pool = make_unique<ThreadPool>(worker_count,  100000);
     cout << "Business thread pool started: " << worker_count << " workers" << endl;
     SSL_library_init();
     OpenSSL_add_all_algorithms();
