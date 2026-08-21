@@ -1442,7 +1442,7 @@ int main(int argc, char* argv[])
         cerr << "[DEBUG] Error detected, sending finish" << endl;
         string msg = "私聊 " + target + " " + "finish" + "\n";
         SSL_write1(ssl, msg.c_str(), msg.size());
-        send_error_occurred = false;   // 直接修改，不需要再锁
+        send_error_occurred = false; 
         cerr << "[DEBUG] Error flag reset, calling send_menu" << endl;
         fflush(stdout); fflush(stderr);
         break;
