@@ -508,26 +508,13 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
         uint32_t data_len = buf.size() - 1 - 16 - 8;
         const char* data = buf.data() + 1 + 16 + 8;
     cout << "DEBUG: Entering completion block" << endl;
-   string meta_key = "file:meta:" + file_id;
-    redisReply* reply1 = (redisReply*)redis_command(redis, "HGET %s status", meta_key.c_str());
-    if (!reply1 || reply1->type != REDIS_REPLY_STRING || string(reply1->str) != "uploading") {
+ 
+    if (ctx.status != "uploading") {
         send_message(fd, "文件状态无效或未上传\n");
-        if (reply1) freeReplyObject(reply1);
         close_connection(fd);
         return;
     }
-    freeReplyObject(reply1);
-
-    redisReply* reply2 = (redisReply*)redis_command(redis, "HGET %s filesize", meta_key.c_str());
-    if (!reply2 || reply2->type != REDIS_REPLY_STRING) {
-        send_message(fd, "获取文件大小失败\n");
-        if (reply2) freeReplyObject(reply2);
-        
-       close_connection(fd);
-        return;
-    }
-    size_t filesize = stoull(reply2->str);
-    freeReplyObject(reply2);
+    
 
  /*   string progress_key = "file:progress:" + file_id; 
     redisReply* reply3 = (redisReply*)redis_command(redis, "GET %s", progress_key.c_str());
@@ -546,19 +533,50 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     {
       
     ctx.tmp_fd = open(tmp_path.c_str(), O_WRONLY|O_CREAT,0644);
-    if (ctx.tmp_fd < 0) {
+    if (ctx.tmp_fd < 0) 
+    {
         send_message(fd, "打开临时文件失败\n");
        close_connection(fd);
         return;
-    }}
+      
+    }
+    string meta_key = "file:meta:" + file_id;
+    redisReply* reply1 = (redisReply*)redis_command(redis, "HGET %s status", meta_key.c_str());
+    if (!reply1 || reply1->type != REDIS_REPLY_STRING || string(reply1->str) != "uploading") {
+        send_message(fd, "文件状态无效或未上传\n");
+        if (reply1) freeReplyObject(reply1);
+        close_connection(fd);
+        return;
+    }
+     ctx.status=reply1->str;
+    freeReplyObject(reply1);
+   
+    redisReply* reply2 = (redisReply*)redis_command(redis, "HGET %s filesize", meta_key.c_str());
+    if (!reply2 || reply2->type != REDIS_REPLY_STRING) {
+        send_message(fd, "获取文件大小失败\n");
+        if (reply2) freeReplyObject(reply2);
+        
+       close_connection(fd);
+        return;
+    }
+    ctx.filesize = stoull(reply2->str);
+    freeReplyObject(reply2);
+       ctx.upload_offset=lseek(ctx.tmp_fd,0,SEEK_END);
+}
+   
     string filepath=path+file_id+".tmp";
-    size_t current_offset=lseek(ctx.tmp_fd,0,SEEK_END);
+   /* size_t current_offset=lseek(ctx.tmp_fd,0,SEEK_END);
     if (offset != current_offset) {
         send_message(fd, "偏移量不匹配\n");
        close_connection(fd);
         return;
     }
-
+*/
+    if (offset != ctx.upload_offset) {
+        send_message(fd, "偏移量不匹配\n");
+       close_connection(fd);
+        return;
+    }
     lseek(ctx.tmp_fd, offset, SEEK_SET);
     ssize_t written = write(ctx.tmp_fd, data, data_len);
     if (written != (ssize_t)data_len) {
@@ -566,7 +584,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
       close_connection(fd);
         return;
     }
-
+    ctx.upload_offset+=written;
    /*redisReply* reply4 = (redisReply*)redis_command(redis, "INCRBY %s %d", progress_key.c_str(), data_len);
     if (!reply4 || reply4->type != REDIS_REPLY_INTEGER) {
         send_message(fd, "更新进度失败\n");
@@ -577,9 +595,9 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     long long new_progress = reply4->integer;
     freeReplyObject(reply4);
     cout << "DEBUG: new_progress=" << new_progress << ", filesize=" << filesize << endl;
-   */
-  long long new_progress=lseek(ctx.tmp_fd,0,SEEK_END);
-    if (new_progress >= (long long)filesize) {
+   
+  long long new_progress=lseek(ctx.tmp_fd,0,SEEK_END);*/
+    if (ctx.upload_offset >=ctx.filesize) {
      
         string final_path = "./files/" + file_id + "_" + filename;
         cout << "DEBUG: tmp_path=" << tmp_path << endl;
@@ -597,6 +615,7 @@ cout << "DEBUG: rename result:success"  << endl;
         close(ctx.tmp_fd);
         ctx.tmp_fd=-1;
     }
+    string meta_key="file:meta:"+file_id;
       redis_command(redis, "HSET %s status complete", meta_key.c_str());
  /*  redis_command(redis, "DEL %s", progress_key.c_str());*/
     string complete_msg = "UPLOAD_COMPLETE " + file_id + "\n";

@@ -1029,7 +1029,6 @@ void findpassword1(int fd,const string&name,const string&email,const string&code
 }
 
 bool authenticate1(int ufd, const string& username, const string& password_hash, const string& email, const string& code) {
-    // 1. 验证密码
     string key = "user:" + username;
     redisReply* reply = (redisReply*)redis_command(redis_conn, "HGET %s password", key.c_str());
     if (!reply || reply->type != REDIS_REPLY_STRING) {
@@ -1039,7 +1038,7 @@ bool authenticate1(int ufd, const string& username, const string& password_hash,
     string stored = reply->str;
     freeReplyObject(reply);
     if (stored != password_hash) {
-        return false;   // 密码错误
+        return false;   
     }
 
     if (!email.empty() && !code.empty()) {

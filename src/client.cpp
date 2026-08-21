@@ -281,7 +281,7 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
         return;
     }
 
-    const size_t CHUNK_SIZE = 64 * 1024;
+    const size_t CHUNK_SIZE = 512 * 1024;
 
     vector<char> buffer(CHUNK_SIZE);
 
@@ -1309,11 +1309,11 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
-               if(w.find("@163.com")==string::npos)
+              /* if(w.find("@163.com")==string::npos)
                {
                 cout<<"请使用@163.com邮箱，注册失败\n";
                 continue;
-               }
+               }*/
                 string pwd_md5 = SHA256(SALT+p);
                 string msg = "普通注册 " + u + " " + pwd_md5 + " "+w+"\n";
                SSL_write1(ssl, msg.c_str(), msg.size());

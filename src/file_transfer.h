@@ -24,6 +24,7 @@ struct FILETRANSFER {
     string file_id;
     string tmp_path;
     int tmp_fd = -1;
+    uint64_t  upload_offset=0;
     ParseState state = PARSE_HEADER;
     uint32_t header_bytes = 0;
     uint32_t total_len = 0;
@@ -35,6 +36,8 @@ struct FILETRANSFER {
     vector<char> download_chunk;
     size_t chunk_sent = 0;
     bool file_read_done=false;
+    uint64_t filesize=0;
+    string status;
 };
 
 extern std::map<std::string, std::string> filename_to_file_id;
