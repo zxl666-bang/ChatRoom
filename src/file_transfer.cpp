@@ -187,7 +187,15 @@ void notify_reciver(redisContext* redis, const string& file_id) {
         redis_command(redis, "RPUSH %s %s", ("files:" + target).c_str(), notify_msg.c_str());
         int target_fd = find_client_fd_by_name(target);
         if (target_fd != -1) {
+            auto it=chat.find(target);
+            auto it2=chat_group.find(target);
+            if(it==chat.end()&&it2==chat_group.end())
             send_message(target_fd, notify_msg);
+            else
+            {
+                string key="unreadname:"+target;
+                redis_command(redis_conn,"RPUSH %s %s",key.c_str(),sender.c_str());
+            }
         } else {
             cerr<<"对方离线，已存储\n";
             redis_command(redis, "INCR %s", ("offlinefiles:" + target).c_str());
@@ -203,7 +211,16 @@ void notify_reciver(redisContext* redis, const string& file_id) {
                 redis_command(redis, "RPUSH %s %s", ("files:" + member).c_str(), notify_msg.c_str());
                 int member_fd = find_client_fd_by_name(member);
                 if (member_fd != -1) {
-                    send_message(member_fd, notify_msg);
+                    auto it=chat.find(target);
+            auto it2=chat_group.find(target);
+            if(it==chat.end()&&it2==chat_group.end())
+            send_message(member_fd, notify_msg);
+            else
+            {
+                string key="unreadname:"+member;
+                redis_command(redis_conn,"RPUSH %s %s",key.c_str(),sender.c_str());
+            }
+                    
                 } else {
                      cerr<<"对方离线，已存储\n";
             redis_command(redis, "INCR %s", ("offlinefiles:" + member).c_str());

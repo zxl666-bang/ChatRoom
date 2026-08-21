@@ -1644,17 +1644,6 @@ void jiechupinbi(int ufd,const string&name)
     }
     send_message(ufd,"解除屏蔽成功\n");
     freeReplyObject(reply2);
-    int target_fd = -1;
-    { lock_guard<recursive_mutex> lk(routing_mutex);
-         auto it = name_to_fd.find(name); 
-         if (it != name_to_fd.end()) 
-         target_fd = it->second; 
-    }
-    if (target_fd != -1) 
-    {
-        send_message(target_fd,"解除屏蔽成功\n");
-    }
-    
     return;
 
 }
@@ -1727,13 +1716,19 @@ string block="blocklist:"+target_name;
     if (target_fd != -1) 
     {
         bool is_chat=false;
+        bool on_chat=false;
         {
             lock_guard<mutex> lock(chat_mtu);
             auto sender=chat.find(c.username);
             auto target=chat.find(target_name);
+            auto target1=chat_group.find(target_name);
             if(sender!=chat.end()&&target!=chat.end()&&sender->second==target_name&&target->second==c.username)
             {
                 is_chat=true;
+            }
+            if(target!=chat.end()||target1!=chat_group.end())
+            {
+                on_chat=true;
             }
         }
         if(is_chat)
@@ -1758,7 +1753,12 @@ if (incr_reply) {
 } else {
     cerr << "INCR failed" << endl;
 }
-           send_unreadsize(key1,CLIENT(sender_fd)->username,target_name);
+           if(on_chat==false)send_unreadsize(key1,CLIENT(sender_fd)->username,target_name);
+           else
+          {
+            string key="unreadname:"+target_name;
+            redis_command(redis_conn,"RPUSH %s %s",key.c_str(),CLIENT(sender_fd)->username.c_str());
+          }
     } }
     else
      {
@@ -2559,12 +2559,19 @@ void qunliao(int sender_fd, const string& qun, const string& content)
         if (member_fd != -1) 
         {
              bool is_chat=false;
+             bool on_chat=false;
         {
         lock_guard<mutex> lock(chat_group_mtu);
         auto it=chat_group.find(member);
+        auto target=chat_group.find(member);
+        auto target1=chat.find(member);
         if(it!=chat_group.end()&&it->second==qun)
         {
             is_chat=true;
+        }
+        if(target1!=chat.end()||target!=chat_group.end())
+        {
+            on_chat=true;
         }
     }
     if(is_chat)
@@ -2574,7 +2581,7 @@ void qunliao(int sender_fd, const string& qun, const string& content)
          string place="group:"+qun;
     store_history(CLIENT(sender_fd)->username,place,content);
     }
-    else
+    else 
     {
              string key = "unread:" + member+":"+qun;
              redis_command(redis_conn, "RPUSH %s %s", key.c_str(), msg.c_str());
@@ -2586,8 +2593,16 @@ if (incr_reply) {
 } else {
     cerr << "INCR failed" << endl;
 }
-           send_unreadsize(key1,qun,member);
-        } }
+         if(on_chat==false)
+        { send_unreadsize(key1,qun,member);}
+         else
+        {
+            string key="unreadname:"+member;
+            redis_command(redis_conn,"RPUSH %s %s",key.c_str(),qun.c_str());
+        }
+        }
+   
+     }
         else
          {
              string key = "unread:" + member+":"+qun;
@@ -2658,10 +2673,67 @@ void chachengyuan(int ufd, const string& qun)
         return;
     }
     send_message(ufd, "群成员:\n");
+    bool a=false;
     for (size_t i = 0; i < reply->elements; ++i) 
     {
         string name = reply->element[i]->str;
-        send_message(ufd, name + "\n");
+        string msg=name;
+        bool b=false;
+        if(is_online(name))
+        {
+            msg+="  [在线]";
+        }
+        else
+        {
+           msg+=" [不在线]";
+        }
+        if(a==false)
+        {
+            string key="group:"+qun;
+            redisReply*owner=(redisReply*)redis_command(redis_conn,"HGET %s owner",key.c_str());
+        if(owner&&owner->type==REDIS_REPLY_STRING&&owner->str==name)
+        {
+            msg+="  群主\n";
+            a=true;
+            b=true;
+             send_message(ufd,msg);
+        }
+        if(owner)
+        {
+            freeReplyObject(owner);
+        }
+        }
+        else
+        {
+            string key="group:"+qun+":guanli:";
+            redisReply*guan=(redisReply*)redis_command(redis_conn,"SMEMBERS %s",key.c_str());
+            if(guan&&guan->type==REDIS_REPLY_ARRAY)
+            {
+                size_t n=guan->elements;
+                if(n>0)
+                {
+                    for(size_t i=0;i<n;i++)
+                    {
+                        if(guan->element[i]->str==name)
+                        {
+                            msg+=" 管理员";
+                            b=true;
+                            send_message(ufd, msg+ "\n");
+                        }
+                    }
+                }
+            }
+            if(guan)
+            {
+                freeReplyObject(guan);
+            }
+        }
+        if(!b)
+        {
+            msg+="  成员\n";
+             send_message(ufd, msg);
+        }
+        
     }
     freeReplyObject(reply);
     send_message(ufd, "成员列表结束\n");
@@ -3020,6 +3092,32 @@ void tuichu(int fd)
     send_message(fd, "退出登录成功\n");
 }
 
+void notify(int fd)
+{
+    string key="unreadname:"+CLIENT(fd)->username;
+    redisReply*reply=(redisReply*)redis_command(redis_conn,"LRANGE %s 0 -1",key.c_str());
+    if(reply&&reply->type==REDIS_REPLY_ARRAY)
+    {
+        size_t n=reply->elements;
+        if(n>0)
+        {
+          unordered_set<string> senders;
+        for (size_t i = 0; i < reply->elements; ++i) {
+            senders.insert(reply->element[i]->str);
+        }
+        for (const string& sender : senders) {
+            string count_key = "unread_size:" + CLIENT(fd)->username + ":" + sender;
+            send_unreadsize(count_key, sender, CLIENT(fd)->username);
+        }
+        redis_command(redis_conn, "DEL %s", key.c_str());
+        }
+    }
+    if(reply)
+    {
+        freeReplyObject(reply);
+    }
+
+}
 void files(int fd)
 {
     Client&c=*CLIENT(fd);
@@ -3282,6 +3380,7 @@ void handle_command(int fd, const string& line)
             {
                 lock_guard<mutex> lock(chat_mtu);
                 chat.erase( CLIENT(fd)->username);
+                notify(fd);
             }
         }
     }
@@ -3419,6 +3518,7 @@ void handle_command(int fd, const string& line)
             {
                 lock_guard<mutex> lock(chat_group_mtu);
                 chat_group.erase( CLIENT(fd)->username);
+                notify(fd);
             }
         }
       
