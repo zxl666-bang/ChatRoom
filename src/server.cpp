@@ -1511,6 +1511,27 @@ void del_friend(int fd, const string& target)
     freeReplyObject(reply1);
     send_message(fd,"删除成功\n");
     string msg=c.username+"删除了你\n";
+    string place=CLIENT(fd)->username<target?CLIENT(fd)->username+":"+target:target+":"+CLIENT(fd)->username;
+    if(history_db)
+    {
+        string p="history:"+place+":";
+        leveldb::ReadOptions readoption;
+        leveldb::WriteOptions wirteoption;
+        leveldb::Iterator*it=history_db->NewIterator(readoption);
+        vector<string>key_delete;
+        for (it->Seek(p); it->Valid() && it->key().starts_with(p); it->Next()) {
+            key_delete.push_back(it->key().ToString());
+        }
+        delete it;
+        for (const string& key : key_delete) {
+            leveldb::Status s = history_db->Delete(wirteoption, key);
+            if (!s.ok()) {
+                cerr << "删除历史记录失败: " << key << " " << s.ToString() << endl;
+            }
+        }
+        send_message(fd, "双方历史记录已清除\n");
+    
+    }
     xitongbobao(target,msg);
 }
 

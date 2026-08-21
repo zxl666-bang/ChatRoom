@@ -827,6 +827,10 @@ void recv_thread_func() {
            should_close=true;;
                     }
 }
+                else if(line.find("你不是群成员")!=string::npos||line.find("不是好友")!=string::npos)
+                {
+                    send_menu();
+                }
                 else if (line.rfind("UPLOAD_READY", 0) == 0) {
 
                     cerr << "DEBUG: Received UPLOAD_READY line: ["
@@ -1447,6 +1451,8 @@ int main(int argc, char* argv[])
 }
             else if (cmd_name == "10") 
 { 
+    bool long_send=false;
+    string long_buferr;
     wrong=0;
     string target, content;
     cout << "私聊目标用户名: ";
@@ -1454,7 +1460,7 @@ int main(int argc, char* argv[])
     if (!get_args(target))
      return 0;
 
-    cout << "请输入消息内容，每行一条，输入 finish 结束：\n";
+    cout << "请输入消息内容，每行一条，输入 finish 结束,输入/long开启长文本：\n";
     string msg1= "私聊 " + target + " " + "begin" + "\n";
      SSL_write1(ssl, msg1.c_str(), msg1.size());
     int blank_count = 0;  
@@ -1503,9 +1509,37 @@ int main(int argc, char* argv[])
             continue;
         }
         blank_count = 0;  
+        if(content=="/long")
+        {
+            long_send=true;
+            long_buferr.clear();
+            cerr<<"发长文本，发送/end表示本段结束"<<endl;
+        }
+        if(long_send)
+        {
+             if(content=="/end")
+             {
+                long_send=false;
+                if(!long_buferr.empty())
+                {
+                    string msg = "私聊 " + target + " " +long_buferr + "\n";
+                    SSL_write1(ssl,msg.c_str(),msg.size());
+                }
+                long_buferr.clear();
+                cerr<<"长文本发送结束\n";
+                continue;
+             }
+             else
+             {
+                long_buferr+=content+"\n";
+             }
+
+        }
+        else
+       { 
         string msg = "私聊 " + target + " " + content + "\n";
-        SSL_write1(ssl, msg.c_str(), msg.size());
-         {
+        SSL_write1(ssl, msg.c_str(), msg.size());}
+        {
         lock_guard<mutex> lock(error_mtu);
         if (send_error_occurred) {
             {
