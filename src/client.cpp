@@ -43,6 +43,7 @@ mutex error_mtu;
 bool is_upload=false;
 mutex upload_mtu;
 size_t wrong=0;
+bool serverdisconnect=false;
 char*ip;
 string simplifyPath(string path) {
         vector<string> stack;
@@ -158,6 +159,7 @@ bool SSL_write1(SSL* s, const void* buf, int num) {
         }
 
         cerr << "SSL_write error: " << err << endl;
+        serverdisconnect=true;
         ERR_print_errors_fp(stderr);
         return false;
     }
@@ -181,6 +183,8 @@ static bool SSL_read_all(SSL* s, void* buf, size_t len) {
             continue;
         }
         if (err == SSL_ERROR_ZERO_RETURN) return false;
+        serverdisconnect=true;
+        cerr<<"serverdisconnect=true;"<<endl;
         cerr << "SSL_read error: " << err << endl;
         ERR_print_errors_fp(stderr);
         return false;
@@ -939,7 +943,7 @@ void recv_thread_func() {
 
             cout << "\n服务器正常关闭 TLS 连接。"
                  << endl;
-
+                 serverdisconnect=true;
             break;
         }
 
@@ -1040,6 +1044,13 @@ int main(int argc, char* argv[])
     string line;
     while (getline(cin, line)) 
     {
+        if (serverdisconnect) {
+        cout << "服务器已断开，自动退出登录。" << endl;
+        close(sockfd);
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+    return 0;
+    }
             {
         lock_guard<mutex> lock(close_mtu);
         if (should_close) {

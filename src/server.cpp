@@ -1138,11 +1138,22 @@ bool login2(int fd,const string&name,const string&password)
         send_message(fd,"用户不存在\n");
         return false;
     }
-    if(is_online(name))
+   if(is_online(name)) {
+    int fd_tmp = -1;
     {
-        send_message(fd,"不可重复登录\n");
-        return false;
+        lock_guard<recursive_mutex> lk(routing_mutex);
+        auto it = name_to_fd.find(name);
+        if (it != name_to_fd.end()) fd_tmp = it->second;
     }
+    if (fd_tmp != -1) {
+        shared_ptr<Client> c = CLIENT(fd_tmp);
+        if (c && !c->closing.load()) {
+            send_message(fd, "不可重复登录\n");
+            return false;
+        }
+    }
+    redis_command(redis_conn, "DEL %s", ("online:" + name).c_str());
+}
    string sql="SELECT password_hash, email FROM users WHERE username= ? ";
     vector<vector<string>>res=excute_select(sql,{name});
     if(res.empty())
@@ -1846,6 +1857,11 @@ void guanli(int ufd,const string&qun1,const string&name)
         send_message(ufd,"先登陆\n");
         return;
     }
+    if(CLIENT(ufd)->username==name)
+    {
+        send_message(ufd,"不能设置群主为管理员\n");
+        return;
+    }
      string key = "group:" + qun;
     redisReply* reply = (redisReply*)redis_command(redis_conn, "HGET %s owner", key.c_str());
     if (!reply) {
@@ -2491,6 +2507,8 @@ void shanchenyuan(int ufd,const string&group,const string&name)
        {
         send_message(ufd,"移除成功\n");
         xitongbobao(name,"你被"+group+"移除\n");
+        string key="group:"+group+":guanli:";
+        redis_command(redis_conn,"SREM %s %s",key.c_str(),name.c_str());
        }
         freeReplyObject(reply3);
     }
