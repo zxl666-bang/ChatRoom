@@ -3736,7 +3736,7 @@ cerr << "[THREADPOOL] current queue size: " << g_thread_pool->size() << endl;
                 break;
             }
             t=std::move(client->task.front());
-            client->task.pop_back();
+            client->task.pop_front();
         }
         if(t)
         {
@@ -3758,6 +3758,8 @@ cerr << "[THREADPOOL] current queue size: " << g_thread_pool->size() << endl;
         // 可考虑重试或标记错误，但当前设计下，若队列满，client->task中的任务将永远得不到处理
         // 因为后台任务未启动，后续即使队列空闲也不会再调度了（除非有新消息触发need_schedule）
         // 因此最好设置一个标志，在下次新消息来时重新调度
+        lock_guard<mutex> lock(client->task_lock);
+    client->is_process = false; 
     }}
 }
 
