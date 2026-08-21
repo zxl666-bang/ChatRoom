@@ -1,0 +1,6 @@
+build/
+*.o
+*.tmp
+ChatRoom
+chat_client
+chat_server
