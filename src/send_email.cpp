@@ -23,8 +23,7 @@ static size_t recall(char*buffer,size_t item,size_t maxitem,void*usedata)
     email->pos+=len;
     return len;
 }
-bool send_email(const string& to//收件人邮箱地址
-    , const string& subject, const string& body)
+bool send_email(const string& to, const string& subject, const string& body)
 {
       CURL*curl=curl_easy_init();
       static const string SMTP_URL="smtps://smtp.163.com:465";

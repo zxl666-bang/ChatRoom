@@ -630,12 +630,12 @@ string generat_captcha()
 void GET_CAPTCHA(int ufd,const string&email)
 {
      cout << "收到验证码请求，邮箱: " << email << endl; 
-   size_t pos=email.find("@163.com");
+  /* size_t pos=email.find("@163.com");
     if(pos==string::npos)
     {
         send_message(ufd,"请使用163邮箱\n");
         return;
-    }
+    }*/
     string key1="captcha:limit:"+email;
     redisReply*reply1=(redisReply*)redis_command(redis_conn,"GET %s",key1.c_str());
     if(!reply1)
@@ -883,10 +883,13 @@ void zhuxiao(int fd, const string& name, const string& password) {
     if (rows == 1) {
         send_message(fd, "注销成功，账户已删除\n");
         if(ufd!=-1)
-        {send_message(ufd,"该用户已被注销\n");
-        close_connection(ufd);}
-        close_connection(fd);
-    } else {
+        {
+            send_message(ufd,"该用户已被注销,退出登录\n");
+        /*close_connection(ufd);*/
+         }
+       // close_connection(fd);
+    }
+    else {
         send_message(fd, "注销失败，请稍后重试\n");
     }
 }

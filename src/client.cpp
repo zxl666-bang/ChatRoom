@@ -711,7 +711,7 @@ void recv_thread_func() {
                     
                  
                 }
-                else if (line == "退出登录成功") {
+                else if (line.find("退出登录成功")!=string::npos) {
     lock_guard<mutex> lock(state_mtu);
     logged_in = false;
     username.clear();
@@ -728,6 +728,23 @@ void recv_thread_func() {
     "====================请输入你的命令===================\n";
   
 }
+                else if(line.find("注销成功")!=string::npos||line.find("已被注销")!=string::npos)
+                {
+                     lock_guard<mutex> lock(state_mtu);
+                      logged_in = false;
+                       username.clear();
+                    cerr<<line<<endl;
+                    cerr<<"目录\n"<<
+    "/1;发送验证码\n"<<
+    "/2;验证码注册\n"<<
+    "/3;验证码登录\n"<<
+    "/31;密码登录\n"<<
+    "/35;普通注册\n"
+    "/4;//忘记密码\n"<<
+    "/33;//退出\n"
+    "/34;//注销\n"<<
+    "====================请输入你的命令===================\n";
+                }
                 else if(line.find("history:")==0)
                 {
                      string msg = line.substr(8); 
@@ -1110,11 +1127,11 @@ int main(int argc, char* argv[])
                         
                     }
                 }
-                if(w.find("@163.com")==string::npos)
+                /*if(w.find("@163.com")==string::npos)
                 {
                     cout<<"请用@163.com邮箱,注册失败\n";
                     continue;
-                }
+                }*/
                 n=0;
                 cout<<"code:\n";
                 getline(cin,r);
