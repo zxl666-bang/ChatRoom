@@ -1039,15 +1039,13 @@ bool authenticate1(int ufd, const string& username, const string& password_hash,
         return false;   // 密码错误
     }
 
-    // 2. 密码正确后，验证邮箱和验证码（如果启用）
-    // 如果不需要邮箱验证，可以跳过这部分
     if (!email.empty() && !code.empty()) {
         if (!is_email1(username,email)) {
-            // 可发送错误消息（由调用方处理）
+         
             return false;
         }
         if (!verify_captcha(ufd, email, code)) {
-            // verify_captcha 内部会发送错误消息
+           
             return false;
         }
     }

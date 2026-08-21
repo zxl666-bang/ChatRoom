@@ -380,7 +380,7 @@ void send_next_chunk(int fd) {
     cerr.flush();
     if (ctx.download_state != DOWNLOAD_SENDING) return;
 
-    constexpr size_t CHUNK_SIZE = 64 * 1024;
+    constexpr size_t CHUNK_SIZE =  512* 1024;
     constexpr size_t MAX_BYTES_PER_EVENT = 256 * 1024;
     size_t budget = MAX_BYTES_PER_EVENT;
 
@@ -529,7 +529,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     size_t filesize = stoull(reply2->str);
     freeReplyObject(reply2);
 
-    string progress_key = "file:progress:" + file_id; 
+ /*   string progress_key = "file:progress:" + file_id; 
     redisReply* reply3 = (redisReply*)redis_command(redis, "GET %s", progress_key.c_str());
     if (!reply3 || reply3->type != REDIS_REPLY_STRING) {
         send_message(fd, "获取进度失败\n");
@@ -539,14 +539,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
         return;
     }
     size_t current_offset = stoull(reply3->str);
-    freeReplyObject(reply3);
-
-    if (offset != current_offset) {
-        send_message(fd, "偏移量不匹配\n");
-       close_connection(fd);
-        return;
-    }
-
+    freeReplyObject(reply3);*/
     string filename = get_filename_meta(file_id, redis);
       string tmp_path = "./files/" + file_id + ".tmp";
     if(ctx.tmp_fd==-1)
@@ -558,6 +551,14 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
        close_connection(fd);
         return;
     }}
+    string filepath=path+file_id+".tmp";
+    size_t current_offset=lseek(ctx.tmp_fd,0,SEEK_END);
+    if (offset != current_offset) {
+        send_message(fd, "偏移量不匹配\n");
+       close_connection(fd);
+        return;
+    }
+
     lseek(ctx.tmp_fd, offset, SEEK_SET);
     ssize_t written = write(ctx.tmp_fd, data, data_len);
     if (written != (ssize_t)data_len) {
@@ -566,7 +567,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
         return;
     }
 
-    redisReply* reply4 = (redisReply*)redis_command(redis, "INCRBY %s %d", progress_key.c_str(), data_len);
+   /*redisReply* reply4 = (redisReply*)redis_command(redis, "INCRBY %s %d", progress_key.c_str(), data_len);
     if (!reply4 || reply4->type != REDIS_REPLY_INTEGER) {
         send_message(fd, "更新进度失败\n");
         if (reply4) freeReplyObject(reply4);
@@ -576,7 +577,8 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     long long new_progress = reply4->integer;
     freeReplyObject(reply4);
     cout << "DEBUG: new_progress=" << new_progress << ", filesize=" << filesize << endl;
-   
+   */
+  long long new_progress=lseek(ctx.tmp_fd,0,SEEK_END);
     if (new_progress >= (long long)filesize) {
      
         string final_path = "./files/" + file_id + "_" + filename;
@@ -596,7 +598,7 @@ cout << "DEBUG: rename result:success"  << endl;
         ctx.tmp_fd=-1;
     }
       redis_command(redis, "HSET %s status complete", meta_key.c_str());
-    redis_command(redis, "DEL %s", progress_key.c_str());
+ /*  redis_command(redis, "DEL %s", progress_key.c_str());*/
     string complete_msg = "UPLOAD_COMPLETE " + file_id + "\n";
     send_message(fd, complete_msg);
     cout << "DEBUG: About to call notify_reciver" << endl;

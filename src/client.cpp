@@ -598,7 +598,7 @@ void start_download(const string& file_id, const string& filepath) {
         }
 
         uint32_t total_len = ntohl(net_total_len);
-        if (total_len < 1 + 16 + 8 || total_len > 64 * 1024 + 1 + 16 + 8) {
+        if (total_len < 1 + 16 + 8 || total_len > 512 * 1024 + 1 + 16 + 8) {
             cerr << "收到非法文件包长度: " << total_len << endl;
             success = false;
             break;
