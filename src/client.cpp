@@ -757,8 +757,6 @@ void recv_thread_func() {
     if (colon != string::npos) {
         string sender = msg.substr(0, colon);
         string content = msg.substr(colon + 1);
-        
-        // 将 \\n 还原为真正的换行
         size_t pos = 0;
         while((pos = content.find("\\n", pos)) != string::npos) {
             content.replace(pos, 2, "\n");
@@ -821,6 +819,7 @@ void recv_thread_func() {
         lock_guard<mutex> lock(error_mtu);
         send_error_occurred =false;
     }
+    
 }
                 else if(line=="命令完成"&&logged_in==true)
                 {

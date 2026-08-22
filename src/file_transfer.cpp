@@ -310,10 +310,10 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
    {
     string finalpath=path+file_id+"_"+filename1;
     filepath=path+file_id+".tmp";
-    unlink(finalpath.c_str());
-    unlink(filepath.c_str());
+    /*unlink(finalpath.c_str());
+    unlink(filepath.c_str());*/
     string key7="file:progress:"+file_id;
-    redis_command(redis_conn,"SET %s 0",key7.c_str());
+    //redis_command(redis_conn,"SET %s 0",key7.c_str());
     string key8="file:meta:"+file_id;
     redis_command(redis_conn,"HSET %s status uploading",key8.c_str());
      lock_guard<recursive_mutex> lock(file_mutex);
@@ -500,6 +500,7 @@ void send_next_chunk(int fd) {
 
 void process(int fd,redisContext*redis,const vector<char>&buf)
 {
+    
     cerr<<"process"<<endl;
     if (buf.size() < 25) {
     cerr << "Invalid file packet, size="
@@ -519,9 +520,11 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     uint64_t offset = 0;
     memcpy(&offset, buf.data() + 1 + 16, 8);
     offset = be64toh(offset);
+    cerr << "[PROCESS] cmd=0x01, fd=" << fd << ", offset=" << offset << endl;
     cerr << "on_file_data: cmd=" << (int)cmd << ", file_id=" << file_id << ", offset=" << offset << endl;
 
     if (cmd == 0x01) {
+        
         uint32_t data_len = buf.size() - 1 - 16 - 8;
         const char* data = buf.data() + 1 + 16 + 8;
     cout << "DEBUG: Entering completion block" << endl;
@@ -555,6 +558,8 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     string meta_key = "file:meta:" + file_id;
     redisReply* reply1 = (redisReply*)redis_command(redis, "HGET %s status", meta_key.c_str());
     if (!reply1 || reply1->type != REDIS_REPLY_STRING || string(reply1->str) != "uploading") {
+          cerr << "[DEBUG] status reply type=" << (reply1 ? reply1->type : -1) 
+             << ", str=" << (reply1 && reply1->str ? reply1->str : "null") << endl;
         send_message(fd, "文件状态无效或未上传\n");
         if (reply1) freeReplyObject(reply1);
         close_connection(fd);
@@ -573,9 +578,23 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     }
     ctx.filesize = stoull(reply2->str);
     freeReplyObject(reply2);
-       ctx.upload_offset=lseek(ctx.tmp_fd,0,SEEK_END);
+      off_t tmp_off = lseek(ctx.tmp_fd, 0, SEEK_END);
+if (tmp_off == (off_t)-1) {
+    perror("lseek to end");
+    send_message(fd, "获取文件偏移失败\n");
+    close_connection(fd);
+    return;
 }
+ctx.upload_offset = static_cast<uint64_t>(tmp_off); 
+
+cerr << "[DEBUG] ctx.upload_offset = " << ctx.upload_offset << endl;
+       cerr << "[PROCESS] tmp_fd opened, status=" << ctx.status << ", filesize=" << ctx.filesize << endl;
+       
+}
+cerr << "[DEBUG] ctx.status = " << ctx.status << endl;
+cerr << "[PROCESS] about to check status" << endl;
    if (ctx.status != "uploading") {
+     cerr << "[DEBUG] status check failed, closing connection" << endl;
         send_message(fd, "文件状态无效或未上传\n");
         close_connection(fd);
         return;
@@ -588,12 +607,17 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
        close_connection(fd);
         return;
     }
-*/
+*/cerr << "[PROCESS] about to check offset" << endl;
+
     if (offset != ctx.upload_offset) {
         send_message(fd, "偏移量不匹配\n");
        close_connection(fd);
         return;
     }
+    cerr << "[DEBUG] write: offset=" << offset 
+         << ", ctx.upload_offset=" << ctx.upload_offset 
+         << ", filesize=" << ctx.filesize << endl;
+
     lseek(ctx.tmp_fd, offset, SEEK_SET);
     ssize_t written = write(ctx.tmp_fd, data, data_len);
     if (written != (ssize_t)data_len) {
@@ -602,6 +626,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
         return;
     }
     ctx.upload_offset+=written;
+     cerr << "[DEBUG] after write: upload_offset=" << ctx.upload_offset << endl;
    /*redisReply* reply4 = (redisReply*)redis_command(redis, "INCRBY %s %d", progress_key.c_str(), data_len);
     if (!reply4 || reply4->type != REDIS_REPLY_INTEGER) {
         send_message(fd, "更新进度失败\n");
@@ -644,7 +669,7 @@ cout << "DEBUG: rename result:success"  << endl;
 
     }
 
-  
+  cerr << "[PROCESS] packet processed, file_id=" << file_id << " offset=" << offset << " upload_offset=" << ctx.upload_offset << endl;
     return;
 }
     else if (cmd == 0x03) 
@@ -819,7 +844,7 @@ void on_file_data(int fd, redisContext* redis)
             return;
         }
         else {
-
+ cerr << "[FILE] tls_read error fd=" << fd << " errno=" << errno << " " << strerror(errno) << endl;
             cerr << "[FILE] tls_read error fd="
                  << fd
                  << endl;
@@ -935,6 +960,7 @@ void on_file_data(int fd, redisContext* redis)
                     redis,
                     packet
                 );
+                cerr << "[ON_FILE] after process, packet_process=" << packet_process << endl;
                 packet_process++;
                 if (!get_client(fd)) {
 
@@ -962,7 +988,8 @@ void on_file_data(int fd, redisContext* redis)
                     send_next_chunk(fd);
                     return;
                 }
-
+cerr << "[DEBUG] packet processed, packet_process=" << packet_process 
+     << ", buffer size=" << ctx.buffer.size() << endl;
 
                 continue;
             }
@@ -1055,20 +1082,16 @@ void Resend_file(int fd,const string&sender, const string& filename, redisContex
     return;
     }
     freeReplyObject(reply3);
-    string progress_key = "file:progress:" + file_id;   // 修正冒号
-    redisReply* reply = (redisReply*)redis_command(redis, "GET %s", progress_key.c_str());
-    if (!reply) {
-        send_message(fd, "网络错误，无法获取进度\n");
-        return;
+     string tmp_path = string(path) + file_id + ".tmp";
+    struct stat st;
+    off_t file_size = 0;
+    if (stat(tmp_path.c_str(), &st) == 0) {
+        file_size = st.st_size;
+    } else {
+        file_size = 0;
     }
-    if (reply->type != REDIS_REPLY_STRING) {
-        send_message(fd, "PROGRESS " + file_id + " 0\n");
-        freeReplyObject(reply);
-        return;
-    }
-    string offset = reply->str;
-    freeReplyObject(reply);
-
-    send_message(fd, "PROGRESS " + file_id + " " + offset + "\n");
+    
+        send_message(fd, "PROGRESS " + file_id + " " + to_string(file_size) + "\n");
+   
 }
 
