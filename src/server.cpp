@@ -182,8 +182,8 @@ ssize_t tls_read(int fd, void* buf, size_t size) {
     if (ret > 0) return ret;
 
     int err = SSL_get_error(c->ssl, ret);
-     unsigned long e = ERR_get_error();
-    cerr << "[TLS_READ] fd=" << fd << " ret=" << ret << " err=" << err << " ERR=" << e << " " << (e ? ERR_error_string(e, nullptr) : "") << endl;
+   //  unsigned long e = ERR_get_error();
+  //  cerr << "[TLS_READ] fd=" << fd << " ret=" << ret << " err=" << err << " ERR=" << e << " " << (e ? ERR_error_string(e, nullptr) : "") << endl;
 
     if (err == SSL_ERROR_WANT_READ) return -2;
     if (err == SSL_ERROR_WANT_WRITE) return -3;
@@ -1733,6 +1733,7 @@ void jiechupinbi(int ufd,const string&name)
     }
     send_message(ufd,"解除屏蔽成功\n");
     freeReplyObject(reply2);
+    xitongbobao(name,"你被解除屏蔽成功\n");
     return;
 
 }

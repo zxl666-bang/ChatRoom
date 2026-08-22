@@ -39,14 +39,14 @@ string get_filename_meta(const string&file_id,redisContext*redis)
         {
             freeReplyObject(reply);
         }
-        cout << "DEBUG: filename meta = unknow" << endl;
+       // cout << "DEBUG: filename meta = unknow" << endl;
         return "unknow";
     }
     else
     {
         string name=string(reply->str);
         freeReplyObject(reply);
-        cout << "DEBUG: filename meta = " << name << endl;
+      //  cout << "DEBUG: filename meta = " << name << endl;
         return name;
     }
 }
@@ -153,7 +153,7 @@ void cleanup_temp_files(redisContext* redis) {
             if (reply_meta) freeReplyObject(reply_meta);
         }
     } catch (const fs::filesystem_error& e) {
-        cerr << "清理临时文件发生错误: " << e.what() << endl;
+      cerr << "清理临时文件发生错误: " << e.what() << endl;
     }
 }
 
@@ -384,7 +384,7 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
 }
 
 void send_next_chunk(int fd) {
-      cerr << "[SEND] send_next_chunk called, fd=" << fd << endl;
+  //    cerr << "[SEND] send_next_chunk called, fd=" << fd << endl;
     auto client = get_client(fd);
     if (!client) { cerr << "[SEND] no client" << endl; return; }
     lock_guard<recursive_mutex> client_lock(*client->state_mutex);
@@ -392,8 +392,8 @@ void send_next_chunk(int fd) {
     auto fit = file_contexts.find(fd);
     if (fit == file_contexts.end()) return;
     auto& ctx = fit->second;
-     cerr << "[SEND] download_state=" << ctx.download_state 
-         << ", total_sent=" << ctx.total_sent << endl;
+   //  cerr << "[SEND] download_state=" << ctx.download_state 
+   //      << ", total_sent=" << ctx.total_sent << endl;
     cerr.flush();
     if (ctx.download_state != DOWNLOAD_SENDING) return;
 
@@ -404,7 +404,7 @@ void send_next_chunk(int fd) {
     while (budget > 0) {
         
         if (ctx.chunk_sent >= ctx.download_chunk.size()) {
-             cerr << "[SEND] reading next chunk, offset=" << ctx.download_offset + ctx.total_sent << endl;
+        //     cerr << "[SEND] reading next chunk, offset=" << ctx.download_offset + ctx.total_sent << endl;
             cerr.flush();
             ctx.download_chunk.clear();
             ctx.chunk_sent = 0;
@@ -412,7 +412,7 @@ void send_next_chunk(int fd) {
             vector<char> data(CHUNK_SIZE);
             ssize_t bytes_read = read(ctx.download_file_fd, data.data(), CHUNK_SIZE);
             if (bytes_read > 0) {
-                  cerr << "[SEND] read " << bytes_read << " bytes" << endl;
+           //       cerr << "[SEND] read " << bytes_read << " bytes" << endl;
                 data.resize(static_cast<size_t>(bytes_read));
                 const size_t body_len = 1 + 16 + 8 + data.size();
                 if (body_len > UINT32_MAX) {
@@ -434,7 +434,7 @@ void send_next_chunk(int fd) {
                 memcpy(ctx.download_chunk.data() + 21, &net_offset, 8);
                 memcpy(ctx.download_chunk.data() + 29, data.data(), data.size());
             } else if (bytes_read == 0) {
-                 cerr << "[SEND] EOF" << endl;
+                // cerr << "[SEND] EOF" << endl;
                  cerr << "DOWNLOAD: file read EOF, total_sent = " << ctx.total_sent << " bytes" << endl;
                 ctx.file_read_done=true;
                   if (ctx.download_chunk.empty() && ctx.chunk_sent == 0) {
@@ -456,7 +456,7 @@ void send_next_chunk(int fd) {
         const size_t to_write = min(remain, budget);
         const char* data = ctx.download_chunk.data() + ctx.chunk_sent;
         ssize_t n = tls_write(fd, data, to_write);
-         cerr << "[SEND] tls_write returned " << n << endl;
+        // cerr << "[SEND] tls_write returned " << n << endl;
         if (n > 0) {
             ctx.chunk_sent += static_cast<size_t>(n);
             budget -= static_cast<size_t>(n);
@@ -490,7 +490,7 @@ void send_next_chunk(int fd) {
         }
           
     }
-    cerr << "[SEND] budget exhausted, mod epoll" << endl;
+  //  cerr << "[SEND] budget exhausted, mod epoll" << endl;
     epoll_event ev{};
     ev.events = EPOLLIN | EPOLLOUT;
     ev.data.fd = fd;
@@ -501,10 +501,10 @@ void send_next_chunk(int fd) {
 void process(int fd,redisContext*redis,const vector<char>&buf)
 {
     
-    cerr<<"process"<<endl;
+   //cerr<<"process"<<endl;
     if (buf.size() < 25) {
-    cerr << "Invalid file packet, size="
-         << buf.size() << endl;
+   // cerr << "Invalid file packet, size="
+     //    << buf.size() << endl;
 
     close_connection(fd);
     return;
@@ -520,14 +520,14 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     uint64_t offset = 0;
     memcpy(&offset, buf.data() + 1 + 16, 8);
     offset = be64toh(offset);
-    cerr << "[PROCESS] cmd=0x01, fd=" << fd << ", offset=" << offset << endl;
-    cerr << "on_file_data: cmd=" << (int)cmd << ", file_id=" << file_id << ", offset=" << offset << endl;
+  //  cerr << "[PROCESS] cmd=0x01, fd=" << fd << ", offset=" << offset << endl;
+   // cerr << "on_file_data: cmd=" << (int)cmd << ", file_id=" << file_id << ", offset=" << offset << endl;
 
     if (cmd == 0x01) {
         
         uint32_t data_len = buf.size() - 1 - 16 - 8;
         const char* data = buf.data() + 1 + 16 + 8;
-    cout << "DEBUG: Entering completion block" << endl;
+ //   cout << "DEBUG: Entering completion block" << endl;
  
     
 
@@ -558,7 +558,7 @@ void process(int fd,redisContext*redis,const vector<char>&buf)
     string meta_key = "file:meta:" + file_id;
     redisReply* reply1 = (redisReply*)redis_command(redis, "HGET %s status", meta_key.c_str());
     if (!reply1 || reply1->type != REDIS_REPLY_STRING || string(reply1->str) != "uploading") {
-          cerr << "[DEBUG] status reply type=" << (reply1 ? reply1->type : -1) 
+       cerr << "[DEBUG] status reply type=" << (reply1 ? reply1->type : -1) 
              << ", str=" << (reply1 && reply1->str ? reply1->str : "null") << endl;
         send_message(fd, "文件状态无效或未上传\n");
         if (reply1) freeReplyObject(reply1);
@@ -587,12 +587,12 @@ if (tmp_off == (off_t)-1) {
 }
 ctx.upload_offset = static_cast<uint64_t>(tmp_off); 
 
-cerr << "[DEBUG] ctx.upload_offset = " << ctx.upload_offset << endl;
-       cerr << "[PROCESS] tmp_fd opened, status=" << ctx.status << ", filesize=" << ctx.filesize << endl;
+//cerr << "[DEBUG] ctx.upload_offset = " << ctx.upload_offset << endl;
+ //      cerr << "[PROCESS] tmp_fd opened, status=" << ctx.status << ", filesize=" << ctx.filesize << endl;
        
 }
-cerr << "[DEBUG] ctx.status = " << ctx.status << endl;
-cerr << "[PROCESS] about to check status" << endl;
+//cerr << "[DEBUG] ctx.status = " << ctx.status << endl;
+//cerr << "[PROCESS] about to check status" << endl;
    if (ctx.status != "uploading") {
      cerr << "[DEBUG] status check failed, closing connection" << endl;
         send_message(fd, "文件状态无效或未上传\n");
@@ -607,16 +607,16 @@ cerr << "[PROCESS] about to check status" << endl;
        close_connection(fd);
         return;
     }
-*/cerr << "[PROCESS] about to check offset" << endl;
-
+cerr << "[PROCESS] about to check offset" << endl;
+*/
     if (offset != ctx.upload_offset) {
         send_message(fd, "偏移量不匹配\n");
        close_connection(fd);
         return;
     }
-    cerr << "[DEBUG] write: offset=" << offset 
-         << ", ctx.upload_offset=" << ctx.upload_offset 
-         << ", filesize=" << ctx.filesize << endl;
+  //  cerr << "[DEBUG] write: offset=" << offset 
+    //     << ", ctx.upload_offset=" << ctx.upload_offset 
+    //     << ", filesize=" << ctx.filesize << endl;
 
     lseek(ctx.tmp_fd, offset, SEEK_SET);
     ssize_t written = write(ctx.tmp_fd, data, data_len);
@@ -626,7 +626,7 @@ cerr << "[PROCESS] about to check status" << endl;
         return;
     }
     ctx.upload_offset+=written;
-     cerr << "[DEBUG] after write: upload_offset=" << ctx.upload_offset << endl;
+  //   cerr << "[DEBUG] after write: upload_offset=" << ctx.upload_offset << endl;
    /*redisReply* reply4 = (redisReply*)redis_command(redis, "INCRBY %s %d", progress_key.c_str(), data_len);
     if (!reply4 || reply4->type != REDIS_REPLY_INTEGER) {
         send_message(fd, "更新进度失败\n");
@@ -642,8 +642,8 @@ cerr << "[PROCESS] about to check status" << endl;
     if (ctx.upload_offset >=ctx.filesize) {
      
         string final_path = "./files/" + file_id + "_" + filename;
-        cout << "DEBUG: tmp_path=" << tmp_path << endl;
-        cout << "DEBUG: final_path=" << final_path << endl;
+       // cout << "DEBUG: tmp_path=" << tmp_path << endl;
+      //  cout << "DEBUG: final_path=" << final_path << endl;
         if (rename(tmp_path.c_str(), final_path.c_str()) != 0)
 {
     send_message(fd,"重命名临时文件失败\n");
@@ -662,14 +662,14 @@ cout << "DEBUG: rename result:success"  << endl;
  /*  redis_command(redis, "DEL %s", progress_key.c_str());*/
     string complete_msg = "UPLOAD_COMPLETE " + file_id + "\n";
     send_message(fd, complete_msg);
-    cout << "DEBUG: About to call notify_reciver" << endl;
+   cout << "DEBUG: About to call notify_reciver" << endl;
     notify_reciver(redis, file_id);
     cout << "Upload complete, notifying receiver..." << endl;
     return;
 
     }
 
-  cerr << "[PROCESS] packet processed, file_id=" << file_id << " offset=" << offset << " upload_offset=" << ctx.upload_offset << endl;
+  //cerr << "[PROCESS] packet processed, file_id=" << file_id << " offset=" << offset << " upload_offset=" << ctx.upload_offset << endl;
     return;
 }
     else if (cmd == 0x03) 
@@ -740,7 +740,7 @@ void on_file_data(int fd, redisContext* redis)
 {
     lock_guard<recursive_mutex> file_lock(file_mutex);
 
-    cerr << "[FILE] on_file_data fd=" << fd << endl;
+ //   cerr << "[FILE] on_file_data fd=" << fd << endl;
 
     auto fit = file_contexts.find(fd);
 
@@ -775,12 +775,12 @@ void on_file_data(int fd, redisContext* redis)
 
         if (n > 0) {
 
-            cerr << "[FILE] tls_read fd="
+     /*       cerr << "[FILE] tls_read fd="
                  << fd
                  << " bytes="
                  << n
                  << endl;
-
+*/
             ctx.buffer.insert(
                 ctx.buffer.end(),
                 buf,
@@ -790,12 +790,12 @@ void on_file_data(int fd, redisContext* redis)
         }
         else if (n == -2) {
 
-            cerr << "[FILE] WANT_READ fd="
+           /* cerr << "[FILE] WANT_READ fd="
                  << fd
                  << ", buffered="
                  << ctx.buffer.size()
                  << endl;
-
+*/
             struct epoll_event ev{};
 
             ev.events = EPOLLIN;
@@ -860,12 +860,12 @@ void on_file_data(int fd, redisContext* redis)
 
                 if (ctx.buffer.size() < 4) {
 
-                    cerr << "[FILE] "
+           /*     cerr << "[FILE] "
                          << "waiting header: "
                          << ctx.buffer.size()
                          << "/4"
                          << endl;
-
+*/
                     return;
                 }
 
@@ -897,20 +897,20 @@ void on_file_data(int fd, redisContext* redis)
                 if (ctx.total_len < HEADER_SIZE ||
                     ctx.total_len > MAX_BODY_SIZE) {
 
-                    cerr << "[FILE] "
+               /*     cerr << "[FILE] "
                          << "invalid packet length="
                          << ctx.total_len
                          << endl;
-
+*/
                     close_connection(fd);
                     return;
                 }
 
-                cerr << "[FILE] "
+             /*   cerr << "[FILE] "
                      << "new packet body length="
                      << ctx.total_len
                      << endl;
-
+*/
                 ctx.state = PARSE_BODY;
             }
 
@@ -920,12 +920,12 @@ void on_file_data(int fd, redisContext* redis)
                 if (ctx.buffer.size() <
                     ctx.total_len) {
 
-                    cerr << "[FILE] "
+             /*       cerr << "[FILE] "
                          << "waiting body: buffered="
                          << ctx.buffer.size()
                          << ", need="
                          << ctx.total_len
-                         << endl;
+                         << endl;*/
 
                     return;
                 }
@@ -946,7 +946,7 @@ void on_file_data(int fd, redisContext* redis)
                 ctx.header_bytes = 0;
                 ctx.total_len = 0;
 
-                cerr << "[FILE] "
+           /*     cerr << "[FILE] "
                      << "complete packet received, "
                      << "size="
                      << packet.size()
@@ -954,13 +954,13 @@ void on_file_data(int fd, redisContext* redis)
                      << ctx.buffer.size()
                      << endl;
 
-
+*/
                 process(
                     fd,
                     redis,
                     packet
                 );
-                cerr << "[ON_FILE] after process, packet_process=" << packet_process << endl;
+           //     cerr << "[ON_FILE] after process, packet_process=" << packet_process << endl;
                 packet_process++;
                 if (!get_client(fd)) {
 
@@ -988,9 +988,9 @@ void on_file_data(int fd, redisContext* redis)
                     send_next_chunk(fd);
                     return;
                 }
-cerr << "[DEBUG] packet processed, packet_process=" << packet_process 
+/*cerr << "[DEBUG] packet processed, packet_process=" << packet_process 
      << ", buffer size=" << ctx.buffer.size() << endl;
-
+*/
                 continue;
             }
 
@@ -1003,9 +1003,9 @@ cerr << "[DEBUG] packet processed, packet_process=" << packet_process
 void on_file_connection(int fd, bool connected) {
     lock_guard<recursive_mutex> file_lock(file_mutex);
 
-    cerr << "on_file_connection: fd=" << fd
+  /*  cerr << "on_file_connection: fd=" << fd
          << ", connected=" << connected << endl;
-
+*/
     if (connected) {
         FILETRANSFER ctx{};
         ctx.state = PARSE_HEADER;

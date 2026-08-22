@@ -24,6 +24,7 @@
 #include <openssl/ssl.h>      // 核心 SSL/TLS 函数，如 SSL_new、SSL_read、SSL_write
 #include <openssl/err.h>      // 错误处理，如 ERR_print_errors_fp、ERR_get_error
 #include <openssl/crypto.h>   // 加密基础函数（可选，但若使用锁回调则需）
+#define DEBUG_UPLOAD
 using namespace std;
 const string SALT="chatroomsalt";
 string pending_file_id;
@@ -75,6 +76,7 @@ void send_menu()
 {
     cerr << "send_menu called" << endl;
     cerr << "=============================================\n";
+    cerr<<"================好友操作=============================\n";
     cerr << left << setw(20) << "/5 添加好友"
          << setw(20) << "/6 列出好友申请" << "\n";
     cerr << left << setw(20) << "/7 同意好友申请"
@@ -83,6 +85,9 @@ void send_menu()
          << setw(20) << "/10 私聊" << "\n";
     cerr << left << setw(20) << "/11 屏蔽好友"
          << setw(20) << "/12 解除屏蔽" << "\n";
+    cerr << left << setw(20) << "/29 删除好友"
+     << setw(20) << "/28 查看历史记录" << "\n";
+     cerr<<"================群聊操作=============================\n";
     cerr << left << setw(20) << "/13 申请加入群聊"
          << setw(20) << "/14 退出群聊" << "\n";
     cerr << left << setw(20) << "/15 群聊"
@@ -95,17 +100,17 @@ void send_menu()
          << setw(20) << "/22 删除群成员" << "\n";
     cerr << left << setw(20) << "/23 设置管理员"
          << setw(20) << "/24 删除管理员" << "\n";
-    cerr << left << setw(20) << "/25 解散群聊"
-         << setw(20) << "/26 发送文件" << "\n";
+    cerr <<"/40 查看群聊天记录\n";
+    cerr << left << setw(20) << "/25 解散群聊";
+     cerr<<"================文件操作=============================\n";
+    cerr << "/38 列出文件"
+    << setw(20) << "/30 手动续传" << "\n";
     cerr << left << setw(20) << "/27 下载文件"
-         << setw(20) << "/28 查看历史记录" << "\n";
-    cerr << left << setw(20) << "/29 删除好友"
-         << setw(20) << "/30 手动续传" << "\n";
+    << setw(20) << "/26 发送文件" << "\n";
+    cerr<<"================其他操作=============================\n";
     cerr << left << setw(20) << "/32 读取未读消息"
          << setw(20) << "/36 退出登录" << "\n";
     cerr << "/37 列出命令目录\n";
-    cerr << "/38 列出文件\n";
-    cerr<<"/40 查看群聊天记录\n";
     cerr << "=============================================\n";
 }
 
@@ -355,11 +360,9 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
 
         offset += read_len;
 
-        cerr << "[UPLOAD] sent chunk="
-             << read_len
-             << ", total="
-             << offset
-             << endl;
+      
+   // cerr << "[UPLOAD] sent chunk=" << read_len << ", total=" << offset << endl;
+
     }
 
     file.close();
@@ -800,7 +803,6 @@ void recv_thread_func() {
         lock_guard<mutex> lock(error_mtu);
         send_error_occurred = true;
     }
-    send_menu();
 }
                 else if(line.find("不能群聊")!=string::npos)
                  {        
@@ -809,17 +811,18 @@ void recv_thread_func() {
         lock_guard<mutex> lock(error_mtu);
         send_error_occurred = true;
     }
-    send_menu();
 }
                 else if(line.find("解除屏蔽成功")!=string::npos)
                  {
-                   
-    cout << line << "\n";
+                   if(line.find("你")==string::npos)cout << line << "\n";
     {
         lock_guard<mutex> lock(error_mtu);
         send_error_occurred =false;
     }
-    
+    {
+        lock_guard<mutex> lock(menu_lock);
+        menu=true;
+    }
 }
                 else if(line=="命令完成"&&logged_in==true)
                 {
@@ -951,9 +954,9 @@ void recv_thread_func() {
                          << " <保存路径> 下载"
                          << endl;
                 }
-                else if (line.rfind("PONG", 0) == 0) 
+                else if (line.rfind("PONG", 0) == 0||line.rfind("[UPLOAD]",0)==0) 
                 {  
-
+                    continue;
                 }
                 else 
                 {
