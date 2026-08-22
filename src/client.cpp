@@ -101,12 +101,13 @@ void send_menu()
     cerr << left << setw(20) << "/23 设置管理员"
          << setw(20) << "/24 删除管理员" << "\n";
     cerr <<"/40 查看群聊天记录\n";
-    cerr << left << setw(20) << "/25 解散群聊";
-     cerr<<"================文件操作=============================\n";
+    cerr  << "/25 解散群聊\n";
+    cerr<<"================文件操作=============================\n";
     cerr << "/38 列出文件"
     << setw(20) << "/30 手动续传" << "\n";
     cerr << left << setw(20) << "/27 下载文件"
     << setw(20) << "/26 发送文件" << "\n";
+    cerr<<"/41 发送群文件\n";
     cerr<<"================其他操作=============================\n";
     cerr << left << setw(20) << "/32 读取未读消息"
          << setw(20) << "/36 退出登录" << "\n";
@@ -232,7 +233,14 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
 
         return;
     }
-
+     int sndbuf = 4 * 1024 * 1024;
+     int rcvbuf = 4 * 1024 * 1024;
+if (setsockopt(file_sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
+    perror("setsockopt SO_SNDBUF");
+}
+if (setsockopt(file_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
+    perror("setsockopt SO_RCVBUF");
+}
     if (connect(file_sock,(sockaddr*)&addr, sizeof(addr)) < 0) {
 
         perror("连接文件服务器失败");
@@ -539,6 +547,14 @@ void start_download(const string& file_id, const string& filepath) {
         close(file_sock);
         return;
     }
+     int sndbuf = 4 * 1024 * 1024;
+     int rcvbuf = 4 * 1024 * 1024;
+if (setsockopt(file_sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
+    perror("setsockopt SO_SNDBUF");
+}
+if (setsockopt(file_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
+    perror("setsockopt SO_RCVBUF");
+}
     if (connect(file_sock, (sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("连接文件服务器失败");
         close(file_sock);
@@ -2060,6 +2076,74 @@ if(!get_args(filepath))
             SSL_write1(ssl, msg.c_str(), msg.size());
             cerr<<"退出登录"<<endl;
         }
+            else if (cmd_name == "41") 
+            {
+                {
+                    lock_guard<mutex> lock(upload_mtu);
+                    is_upload=true;
+                }
+                
+                wrong=0;
+             
+    string target ,filepath;
+    cout<<"上传群文件,targetname:\n";
+    getline(cin,target);
+    if(!get_args(target))
+               {
+                return 0;
+               }
+    cout<<"filepath\n";
+    getline(cin,filepath); 
+if(!get_args(filepath))
+               {
+                return 0;
+               }
+   size_t start = filepath.find_first_not_of(" \t\r\n");
+    if (start == string::npos) {
+        cout<<"name不能为空\n";
+         cout << "用法: /26 <目标> <文件路径>\n";
+         send_menu();
+        continue;
+    }
+   size_t end = filepath.find_last_not_of(" \t\r\n");
+    filepath = filepath.substr(start, end - start + 1);
+    filepath=simplifyPath(filepath);
+    if (filepath.empty()) {
+        cout<<"filepath不能为空\n";
+         cout << "用法: /26 <目标> <文件路径>\n";
+         send_menu();
+        continue;
+    }
+    cerr<<"filepath:"<<filepath<<endl;
+    ifstream file(filepath, ios::binary | ios::ate);
+    if (!file.is_open()) {
+        cout<<"file打不开"<<endl;
+        send_menu();
+        continue;
+    }
+    size_t filesize = file.tellg();
+    file.close();
+    if (filesize == 0) {
+         cout << "文件为空\n";
+         send_menu();
+        continue;
+    }
+
+    size_t sep_pos = filepath.find_last_of("/\\");
+    string filename = (sep_pos != string::npos) ? filepath.substr(sep_pos + 1) : filepath;
+
+    pending_file_path = filepath;
+    pending_file_path = filepath;
+cerr << "DEBUG: pending_file_path set to [" << pending_file_path << "]" << endl;
+cerr << "DEBUG: hex: ";
+for (char c : pending_file_path) cerr << hex << (int)(unsigned char)c << " ";
+cerr << dec << endl;
+  
+    string cmd = "UPLOAD_GROUP_FILE " + target + " " + filename + " " + to_string(filesize) + "\n";
+  SSL_write1(ssl, cmd.c_str(),cmd.size());
+
+    cout << "文件上传请求已发送，等待服务端响应...\n";
+}
             else {
                 wrong++;
                 cout << "Unknown command" << endl;

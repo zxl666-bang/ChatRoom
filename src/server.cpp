@@ -116,8 +116,8 @@ static recursive_mutex mysql_mutex;
 static shared_mutex clients_map_mutex;
 static recursive_mutex routing_mutex;
 static atomic<uint64_t> next_client_generation{1};
-static const size_t MAX_SEND_BUFFER = 256ULL * 1024ULL * 1024ULL;
-static const size_t MAX_WRITE_PER_EVENT = 256ULL * 1024ULL;
+static const size_t MAX_SEND_BUFFER = 512ULL * 1024ULL * 1024ULL;
+static const size_t MAX_WRITE_PER_EVENT = 512ULL * 1024ULL;
 
 redisReply* redis_command(redisContext* c, const char* fmt, ...) {
     if (!c) return nullptr;
@@ -3795,6 +3795,40 @@ void handle_command(int fd, const string& line)
 
     handle_file_command(redis_conn, fd, sender, target, filename, filesize);
 }
+    else if(cmd=="UPLOAD_GROUP_FILE")
+   {
+     if(CLIENT(fd)->logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
+    string target, filename, filesize_str;
+    if (!(iss >> target >> filename >> filesize_str)) {
+        send_message(fd, "用法: UPLOAD_FILE <目标> <文件名> <文件大小>\n");
+        return;
+    }
+
+    if (!CLIENT(fd)->logged_in) {
+        send_message(fd, "请先登录\n");
+        return;
+    }
+
+    size_t filesize;
+    try {
+        filesize = stoull(filesize_str);
+    } catch (...) {
+        send_message(fd, "文件大小格式错误\n");
+        return;
+    }
+    if (filesize == 0) {
+        send_message(fd, "文件大小不能为0\n");
+        return;
+    }
+
+    string sender = CLIENT(fd)->username;
+
+    handle_group_file_command(redis_conn, fd, sender, target, filename, filesize);
+
+   }
     else if (cmd == "RESUME_UPLOAD") {
         if(CLIENT(fd)->logged_in==false)
         {
@@ -4084,7 +4118,15 @@ int main()
                         break;
                     }
                       int heart=1;
-                    setsockopt(client_fd,SOL_SOCKET,SO_KEEPALIVE,&heart,sizeof(heart));                 
+                    setsockopt(client_fd,SOL_SOCKET,SO_KEEPALIVE,&heart,sizeof(heart));  
+                     int sndbuf = 4 * 1024 * 1024;
+     int rcvbuf = 4 * 1024 * 1024;
+if (setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
+    perror("setsockopt SO_SNDBUF");
+}
+if (setsockopt(client_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
+    perror("setsockopt SO_RCVBUF");
+}               
                     if (set_nonblocking(client_fd) < 0) {
                         perror("set_nonblocking client");
                         close(client_fd);

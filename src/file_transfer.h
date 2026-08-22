@@ -50,6 +50,7 @@ long long get_file_size(const string& file_id, redisContext* redis);
 void notify_reciver(redisContext* redis, const string& file_id);
 void init_file_transfer(redisContext* redis);
 void handle_file_command(redisContext* redis, int fd, const string& sender, const string& target, const string& filename, size_t Size);
+void handle_group_file_command(redisContext* redis, int fd, const string& sender, const string& target, const string& filename, size_t Size);
 void on_file_data(int fd, redisContext* redis);
 void on_file_connection(int fd, bool connected);
 void cleanup_file_transfer(redisContext* redis);

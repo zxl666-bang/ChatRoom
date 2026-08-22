@@ -253,27 +253,14 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
     redisReply*reply1=(redisReply*)redis_command(redis,"SISMEMBER %s %s",key1.c_str(),target.c_str());
     if(!reply1||reply1->type!=REDIS_REPLY_INTEGER||reply1->integer==0)
     {
-        string key2="group:"+target+":members:";
-         redisReply*reply2=(redisReply*)redis_command(redis,"SISMEMBER %s %s",key2.c_str(),sender.c_str());
-          if(!reply2||reply2->type!=REDIS_REPLY_INTEGER||reply2->integer==0)
-          {
-           send_message(fd,"不是好友也不是群成员，不能发送文件\n");
-            if(reply2)
-            {
-                freeReplyObject(reply2);
-                if(reply1) freeReplyObject(reply1);
-            }
-           return;
-          }
-          freeReplyObject(reply2);
-          is_group="1";
         
+           send_message(fd,"不是好友，不能发送文件\n");
+           
     }
       if(reply1)
           {
             freeReplyObject(reply1);
           }
-
     string  file_id;
     string  filepath;
     string filename1;
@@ -383,6 +370,133 @@ void handle_file_command(redisContext*redis,int fd,const string&sender,const str
     return;
 }
 
+void handle_group_file_command(redisContext*redis,int fd,const string&sender,const string&target, const string&filename,size_t Size)
+{
+    string is_group="0";
+   
+        string key1="group:"+target+":members:";
+         redisReply*reply1=(redisReply*)redis_command(redis,"SISMEMBER %s %s",key1.c_str(),sender.c_str());
+          if(!reply1||reply1->type!=REDIS_REPLY_INTEGER||reply1->integer==0)
+          {
+           send_message(fd,"不是群成员，不能发送文件\n");
+            if(reply1)
+            {
+                freeReplyObject(reply1);
+               
+            }
+           return;
+          }
+          freeReplyObject(reply1);
+          is_group="1";
+        
+    string  file_id;
+    string  filepath;
+    string filename1;
+    bool is_old=false;
+          string key4="filename_to_id:"+sender;
+          redisReply*reply4=(redisReply*)redis_command(redis,"HGET %s %s",key4.c_str(),filename.c_str());
+          if(reply4&&reply4->type==REDIS_REPLY_STRING)
+          {
+           
+                file_id=reply4->str;
+                string key6="file:meta:"+file_id;
+                redisReply*reply6=(redisReply*)redis_command(redis_conn,"HGET %s filename",key6.c_str());
+                if(reply6&&reply6->type==REDIS_REPLY_STRING)
+                {
+                    filename1=reply6->str;
+                    is_old=true;
+                }
+                if(reply6)
+                {
+                    freeReplyObject(reply6);
+                }
+            }
+            
+          if(reply4)
+          {
+            freeReplyObject(reply4);
+          }
+   if(!is_old)
+   {
+    file_id=to_string(time(nullptr))+"_"+to_string(rand()%100000);
+    filepath =path+file_id+".tmp";
+   }
+   else
+   {
+    string finalpath=path+file_id+"_"+filename1;
+    filepath=path+file_id+".tmp";
+    /*unlink(finalpath.c_str());
+    unlink(filepath.c_str());*/
+    string key7="file:progress:"+file_id;
+    //redis_command(redis_conn,"SET %s 0",key7.c_str());
+    string key8="file:meta:"+file_id;
+    redis_command(redis_conn,"HSET %s status uploading",key8.c_str());
+     lock_guard<recursive_mutex> lock(file_mutex);
+    for (auto it = file_contexts.begin(); it != file_contexts.end(); ++it) {
+        if (it->second.file_id == file_id && it->second.download_file_fd != -1) {
+            close(it->second.download_file_fd);
+            it->second.download_file_fd = -1;
+            it->second.download_state = DOWNLOAD_IDLE;
+            it->second.download_chunk.clear();
+        }
+    }
+   }
+   
+   cout << "handle_file_command: sender=" << sender 
+     << ", target=" << target 
+     << ", filename=" << filename 
+     << ", filesize=" << Size << endl;
+    string key="file:meta:"+file_id;
+    redisReply*reply=(redisReply*)redis_command(redis,"HSET %s sender %s target %s filename %s is_group %s filesize %llu status uploading",key.c_str(),sender.c_str(),target.c_str(),filename.c_str(),is_group.c_str(),(unsigned long long)Size);
+    if(!reply||reply->type!=REDIS_REPLY_INTEGER)
+    {
+       
+        if(reply)
+        {
+            if (!reply || reply->type != REDIS_REPLY_INTEGER) {
+    if (reply) {
+        cerr << "HSET failed, type=" << reply->type 
+             << ", str=" << (reply->str ? reply->str : "null") << endl;
+        freeReplyObject(reply);
+    }
+   send_message(fd, "reids存储哈希失败\n");
+    return;
+}
+            freeReplyObject(reply);
+        }
+        send_message(fd,"reids存储哈希失败\n");
+        return;
+    }
+    freeReplyObject(reply);
+    redisReply*reply2=(redisReply*)redis_command(redis,"SET file:progress:%s 0",file_id.c_str());
+    if(!reply2||reply2->type!=REDIS_REPLY_STATUS||string(reply2->str)!="OK")
+    {
+        send_message(fd,"reids存储SET失败\n");
+        if(reply2)
+        {
+            freeReplyObject(reply2);
+        }
+        return;
+    }
+     freeReplyObject(reply2);
+    string key2="filename_to_id:"+sender;
+    redisReply*reply3=(redisReply*)redis_command(redis,"HSET %s %s %s",key2.c_str(),filename.c_str(),file_id.c_str());
+     if(!reply3||reply3->type!=REDIS_REPLY_INTEGER)
+    {
+       
+        if(reply3)
+        {
+            freeReplyObject(reply3);
+        }
+        send_message(fd,"reids存储哈希失败\n");
+        return;
+    }
+    freeReplyObject(reply3);
+    
+    string msg="UPLOAD_READY:"+file_id+"\n";
+  send_message(fd,msg);
+    return;
+}
 void send_next_chunk(int fd) {
   //    cerr << "[SEND] send_next_chunk called, fd=" << fd << endl;
     auto client = get_client(fd);
@@ -618,7 +732,7 @@ cerr << "[PROCESS] about to check offset" << endl;
     //     << ", ctx.upload_offset=" << ctx.upload_offset 
     //     << ", filesize=" << ctx.filesize << endl;
 
-    lseek(ctx.tmp_fd, offset, SEEK_SET);
+    //lseek(ctx.tmp_fd, offset, SEEK_SET);
     ssize_t written = write(ctx.tmp_fd, data, data_len);
     if (written != (ssize_t)data_len) {
         send_message(fd, "写入数据失败\n");
