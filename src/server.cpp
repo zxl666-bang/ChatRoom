@@ -1225,13 +1225,10 @@ void get_hisory(int ufd,const string&target)
     if(is_friend(CLIENT(ufd)->username,target)==false)
     {
         firend=false;
-        string key="user:"+CLIENT(ufd)->username+":groups:";
-        redisReply*reply1=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key.c_str(),target.c_str());
-        if(!reply1||reply1->type!=REDIS_REPLY_INTEGER||reply1->integer==0)
-        {
-            send_message(ufd,"不是好友也不是群成员无法查询历史记录\n");
-            return;
-        }
+       
+        send_message(ufd,"不是好友无法查询历史记录\n");
+        return;
+          
     }
 
   leveldb::ReadOptions readoption;
@@ -1239,10 +1236,6 @@ void get_hisory(int ufd,const string&target)
   if(firend)
   {
     value+=(CLIENT(ufd)->username<target)?CLIENT(ufd)->username+":"+target+":":target+":"+CLIENT(ufd)->username+":";
-  }
-  else
-  {
-    value+="group:"+target+":";
   }
   leveldb::Iterator*it=history_db->NewIterator(readoption);
   it->Seek(value);
@@ -1278,7 +1271,67 @@ void get_hisory(int ufd,const string&target)
   return;
 }
 
+void get_group_hisory(int ufd,const string&target)
+{
+    if(history_db==nullptr)
+    {
+        cerr<<"历史数据未初始化"<<endl;
+        return;
+    }
+    if(CLIENT(ufd)->logged_in==false)
+    {
+        send_message(ufd,"先登录\n");
+        return;
+    }
+    
+        string key="user:"+CLIENT(ufd)->username+":groups:";
+        redisReply*reply1=(redisReply*)redis_command(redis_conn,"SISMEMBER %s %s",key.c_str(),target.c_str());
+        if(!reply1||reply1->type!=REDIS_REPLY_INTEGER||reply1->integer==0)
+        {
+            send_message(ufd,"不是群成员无法查询历史记录\n");
+            return;
+        }
+    
 
+  leveldb::ReadOptions readoption;
+  string value="history:";
+  
+  
+    value+="group:"+target+":";
+  
+  leveldb::Iterator*it=history_db->NewIterator(readoption);
+  it->Seek(value);
+  vector<string>msg;
+  while(it->Valid()&&it->key().starts_with(value))
+  {
+    string content="history:";
+    content+=it->value().ToString()+"\n";
+    msg.push_back(content);
+    it->Next();
+  }
+  if(!it->status().ok())
+  {
+    cerr<<"迭代器错误"<<it->status().ToString()<<endl;
+    delete it;
+    return;
+  }
+  delete it;
+  if(msg.empty())
+  {
+    send_message(ufd,"没有聊天记录\n");
+    return;
+  }
+  
+ 
+  size_t n=msg.size()>200?200:msg.size();
+  send_message(ufd,"近"+to_string(n)+"条聊天记录\n");
+  for(size_t i=0;i<msg.size();i++)
+  {
+    send_message(ufd,msg[i]);
+  }
+  send_message(ufd,"聊天记录加载完毕\n");
+  return;
+}
 void addfirends(int fd,const string &target)
 {
     Client&c=*CLIENT(fd);
@@ -2986,6 +3039,8 @@ void tuiqun(int ufd,const string&qun)
    if(reply3->type==REDIS_REPLY_INTEGER&&reply3->integer==1)
    {
          send_message(ufd,"从用户列表删除成功");
+         string key="group:"+qun+":guanli:";
+         redis_command(redis_conn,"SREM %s %s",key.c_str(),CLIENT(ufd)->username.c_str());
    }
    else
    {
@@ -3080,6 +3135,10 @@ void jiesan(int ufd,const string&qun)
     {
         send_message(ufd,"解散群聊成功\n");
         freeReplyObject(reply4);
+        string group_key="group:"+qun+":guanli:";
+        redis_command(redis_conn,"DEL %s",group_key.c_str());
+        string group1_key="jiaqunshengqing"+qun;
+        redis_command(redis_conn,"DEL %s",group1_key.c_str());
 if (history_db != nullptr) {
     leveldb::ReadOptions read_opts;
     leveldb::WriteOptions write_opts;
@@ -3561,6 +3620,19 @@ void handle_command(int fd, const string& line)
             }
         }
       
+    }
+    else if(cmd=="查看群聊天记录")
+    {
+         if(CLIENT(fd)->logged_in==false)
+        {
+            send_message(fd,"先登录\n");
+        }
+        string group;
+        if(!(iss>>group))
+        {
+            send_message(fd,"群名不能为空\n");
+        }
+        get_group_hisory(fd,group);
     }
     else if(cmd=="解散群聊")
     {

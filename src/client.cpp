@@ -105,6 +105,7 @@ void send_menu()
          << setw(20) << "/36 退出登录" << "\n";
     cerr << "/37 列出命令目录\n";
     cerr << "/38 列出文件\n";
+    cerr<<"/40 查看群聊天记录\n";
     cerr << "=============================================\n";
 }
 
@@ -750,22 +751,50 @@ void recv_thread_func() {
     "====================请输入你的命令===================\n";
                 }
                 else if(line.find("history:")==0)
-                {
-                     string msg = line.substr(8); 
+{
+    string msg = line.substr(8); 
     size_t colon = msg.find(':');
     if (colon != string::npos) {
         string sender = msg.substr(0, colon);
         string content = msg.substr(colon + 1);
-        lock_guard<mutex> lock(state_mtu); 
-        if (sender == username) {
-            
-            cout  << right << setw(60) << msg << endl; 
+        
+        // 将 \\n 还原为真正的换行
+        size_t pos = 0;
+        while((pos = content.find("\\n", pos)) != string::npos) {
+            content.replace(pos, 2, "\n");
+            pos += 1;
+        }
+        
+        lock_guard<mutex> lock(state_mtu);
+        bool is_self = (sender == username);
+        string indent;
+        if (is_self) {
+            indent = string(60, ' ');
         } else {
-            
-            cout<< left << setw(60) << msg << endl;
+            indent = "";
+        }
+        vector<string> lines;
+        stringstream ss(content);
+        string line;
+        while (getline(ss, line, '\n')) {
+            lines.push_back(line);
+        }
+        if (lines.empty()) lines.push_back("");
+        for (size_t i = 0; i < lines.size(); ++i) {
+            string output;
+            if (i == 0) {
+                output = sender + ":" + lines[i];
+            } else {
+                output = lines[i];
+            }
+            if (!indent.empty()) {
+                cout << indent.substr(0, indent.length() - output.length()) << output << endl;
+            } else {
+                cout << output << endl;
+            }
         }
     }
-                }
+}
                 else if(line.find("不能私聊")!=string::npos)
                  {        
     cout << line << "\n";
@@ -773,6 +802,7 @@ void recv_thread_func() {
         lock_guard<mutex> lock(error_mtu);
         send_error_occurred = true;
     }
+    send_menu();
 }
                 else if(line.find("不能群聊")!=string::npos)
                  {        
@@ -781,6 +811,7 @@ void recv_thread_func() {
         lock_guard<mutex> lock(error_mtu);
         send_error_occurred = true;
     }
+    send_menu();
 }
                 else if(line.find("解除屏蔽成功")!=string::npos)
                  {
@@ -886,9 +917,7 @@ void recv_thread_func() {
                      stringstream ss(line);
     string cmd, filename, filesize_str, file_id;
     ss >> cmd >> filename >> filesize_str >> file_id;
-    // 可忽略 filename 和 filesize
     cout << "服务器允许下载，开始下载..." << endl;
-    // 启动下载线程，需要知道保存路径（可以在 /27 时设置 pending_file_path）
     thread download_thread(start_download, file_id, pending_file_path);
     download_thread.detach();
                 }
@@ -924,8 +953,18 @@ void recv_thread_func() {
                          << endl;
                 }
                 else if (line.rfind("PONG", 0) == 0) 
-                {  }
-                else {
+                {  
+
+                }
+                else 
+                {
+                     size_t pos = 0;
+    while((pos = line.find("\\n", pos)) != string::npos)
+    {
+        line.replace(pos, 2, "\n");
+        pos += 1;  
+    }
+               
                     cout << line << "\n";
                 }
             }
@@ -1497,7 +1536,7 @@ int main(int argc, char* argv[])
     }
             break;
         }
-        if (content.empty()) {
+    if (content.empty()) {
             blank_count++;
             if (blank_count >= 5) {
                 cerr << "连续输入空白过多，是否继续？(y/n): ";
@@ -1508,21 +1547,34 @@ int main(int argc, char* argv[])
             }
             continue;
         }
-        blank_count = 0;  
-        if(content=="/long")
+    blank_count = 0;  
+    if(content=="/long")
         {
             long_send=true;
             long_buferr.clear();
             cerr<<"发长文本，发送/end表示本段结束"<<endl;
+            continue;
         }
         if(long_send)
         {
              if(content=="/end")
              {
                 long_send=false;
+                string result;
                 if(!long_buferr.empty())
                 {
-                    string msg = "私聊 " + target + " " +long_buferr + "\n";
+        for(size_t i=0;i<long_buferr.size();i++)
+        {
+            if(long_buferr[i]=='\n')
+            {
+                result+="\\n";
+            }
+            else
+            {
+                result+=long_buferr[i];
+            }
+        }
+                    string msg = "私聊 " + target + " " +result + "\n";
                     SSL_write1(ssl,msg.c_str(),msg.size());
                 }
                 long_buferr.clear();
@@ -1531,12 +1583,10 @@ int main(int argc, char* argv[])
              }
              else
              {
-                long_buferr+=content+"\n";
+              long_buferr+=content+"\n";
              }
-
+             continue;
         }
-        else
-       { 
         string msg = "私聊 " + target + " " + content + "\n";
         SSL_write1(ssl, msg.c_str(), msg.size());}
         {
@@ -1549,7 +1599,7 @@ int main(int argc, char* argv[])
         lock_guard<mutex> lock(menu_lock);
         menu=true;}
             break;
-        }
+        
     }
     }
     cout << "消息发送结束。\n";
@@ -1640,12 +1690,14 @@ int main(int argc, char* argv[])
     if (!get_args(target)) return 0;
      string msg = "群聊 " + target + " " + "begin" + "\n";
       SSL_write1(ssl, msg.c_str(), msg.size());
-    cout << "请输入消息内容，每行一条，输入 finish 结束：\n";
+    cout << "请输入消息内容，每行一条，输入 finish 结束,/long为长文本模式：\n";
     int blank_count = 0;  
     {
         lock_guard<mutex> lock(menu_lock);
         menu=false;
     }
+     bool long_send=false;
+     string long_buffer;
     while (true) {
         {
             lock_guard<mutex> lock(error_mtu);
@@ -1682,7 +1734,8 @@ int main(int argc, char* argv[])
 }
 getline(cin,content);
 cout << "\033[1A\033[2K\r";
-    if (content != "finish") {
+    if (content != "finish") 
+    {
         cout << right << setw(60) <<  content<< endl;
     }
         if (content == "finish") {
@@ -1706,8 +1759,46 @@ cout << "\033[1A\033[2K\r";
             continue;
         }
         blank_count = 0;  
-        string msg = "群聊 " + target + " " + content + "\n";
-        SSL_write1(ssl, msg.c_str(), msg.size());
+        if(content=="/long")
+        {
+            long_send=true;
+            continue;
+        }
+        if(long_send)
+        {
+            if(content=="/end")
+            {
+                long_send=false;
+                if(!long_buffer.empty())
+                {
+                    string result;
+                    for(char ch:long_buffer)
+                    {
+                        if(ch=='\n')
+                        {
+                            result+="\\n";
+                        }
+                        else
+                        {
+                            result+=ch;
+                        }
+                    }
+                     string msg = "群聊 " + target + " " + result + "\n";
+                    SSL_write1(ssl, msg.c_str(), msg.size());
+                }
+                long_buffer.clear();
+                cerr<<"长文本发送结束"<<endl;
+                continue;
+            }
+            else
+            {
+                long_buffer+=content+"\n";
+                continue;
+            }
+        }
+        else
+        {string msg = "群聊 " + target + " " + content + "\n";
+        SSL_write1(ssl, msg.c_str(), msg.size());}
     }
     cout << "消息发送结束。\n";
             }
@@ -1817,6 +1908,20 @@ cout << "\033[1A\033[2K\r";
                 return 0;
                }
                 string msg="查看聊天记录 "+u+"\n";
+                
+                 SSL_write1(ssl, msg.c_str(), msg.size());
+            }
+            else if(cmd_name=="40")
+            {
+                wrong=0;
+              string u;
+              cout<<"查看群聊天记录,name:\n";
+              getline(cin,u);
+              if(!get_args(u))
+               {
+                return 0;
+               }
+                string msg="查看群聊天记录 "+u+"\n";
                 
                  SSL_write1(ssl, msg.c_str(), msg.size());
             }
