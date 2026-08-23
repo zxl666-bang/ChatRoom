@@ -75,7 +75,7 @@ string simplifyPath(string path) {
     }
 void send_menu()
 {
-    {lock_guard<mutex> lock(menu1);
+    {lock_guard<mutex> lock(menu_lock);
     cerr << "send_menu called" << endl;
     cerr << "=============================================\n";
     cerr<<"================好友操作=============================\n";
@@ -530,7 +530,6 @@ if (setsockopt(file_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
 void start_download(const string& file_id, const string& filepath) {
     bool success = true;
     size_t local_size = 0;
-
     ifstream local_file(filepath, ios::binary | ios::ate);
     if (local_file.is_open()) {
         local_size = static_cast<size_t>(local_file.tellg());
