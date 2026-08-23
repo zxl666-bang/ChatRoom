@@ -299,7 +299,7 @@ if (setsockopt(file_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
         return;
     }
 
-    const size_t CHUNK_SIZE = 512 * 1024;
+    const size_t CHUNK_SIZE = 1024 * 1024;
 
     vector<char> buffer(CHUNK_SIZE);
 
@@ -625,7 +625,7 @@ if (setsockopt(file_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
         }
 
         uint32_t total_len = ntohl(net_total_len);
-        if (total_len < 1 + 16 + 8 || total_len > 512 * 1024 + 1 + 16 + 8) {
+        if (total_len < 1 + 16 + 8 || total_len > 1024 * 1024 + 1 + 16 + 8) {
             cerr << "收到非法文件包长度: " << total_len << endl;
             success = false;
             break;

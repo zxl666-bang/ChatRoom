@@ -511,8 +511,8 @@ void send_next_chunk(int fd) {
     cerr.flush();
     if (ctx.download_state != DOWNLOAD_SENDING) return;
 
-    constexpr size_t CHUNK_SIZE =  512* 1024;
-    constexpr size_t MAX_BYTES_PER_EVENT = 256 * 1024;
+    constexpr size_t CHUNK_SIZE =  1024* 1024;
+    constexpr size_t MAX_BYTES_PER_EVENT = 1024 * 1024;
     size_t budget = MAX_BYTES_PER_EVENT;
 
     while (budget > 0) {
@@ -1006,7 +1006,7 @@ void on_file_data(int fd, redisContext* redis)
                     1 + 16 + 8;
 
                 const uint32_t MAX_BODY_SIZE =
-                    HEADER_SIZE + 512 * 1024;
+                    HEADER_SIZE + 1024 * 1024;
 
                 if (ctx.total_len < HEADER_SIZE ||
                     ctx.total_len > MAX_BODY_SIZE) {
