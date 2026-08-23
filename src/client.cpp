@@ -525,10 +525,13 @@ void start_download(const string& file_id, const string& filepath) {
     if (local_file.is_open()) {
         local_size = static_cast<size_t>(local_file.tellg());
         local_file.close();
-        if (local_size > 0) {
-            cout << "本地已有 " << local_size << " 字节，将从该位置续传" << endl;
+       if (local_size > 0) {
+      //      cout << "本地已有 " << local_size << " 字节，将从该位置续传" << endl;
+      cout<<"本地已有同名文件,请更改文件名后重新下载"<<endl;
+      return;
         }
-    } else {
+    } 
+    else {
         cout << "本地无文件，从头开始下载" << endl;
     }
 
@@ -819,6 +822,7 @@ void recv_thread_func() {
         lock_guard<mutex> lock(error_mtu);
         send_error_occurred = true;
     }
+
 }
                 else if(line.find("不能群聊")!=string::npos)
                  {        
@@ -827,6 +831,7 @@ void recv_thread_func() {
         lock_guard<mutex> lock(error_mtu);
         send_error_occurred = true;
     }
+     
 }
                 else if(line.find("解除屏蔽成功")!=string::npos)
                  {
@@ -873,7 +878,11 @@ void recv_thread_func() {
                 else if (line == "该用户已被注销" || line.rfind("注销成功",0)==0) {
                     {
             lock_guard<mutex> lock(close_mtu);
-           should_close=true;;
+           should_close=true;
+                    }
+                    {
+                        lock_guard<mutex> lock(state_mtu);
+                        logged_in=false;
                     }
 }
                 else if(line.find("你不是群成员")!=string::npos||line.find("不是好友")!=string::npos)
@@ -1613,10 +1622,6 @@ int main(int argc, char* argv[])
             {
                 send_error_occurred=false;
             } 
-            {
-        lock_guard<mutex> lock(menu_lock);
-        menu=true;}
-            break;
         
     }
     }
@@ -1636,7 +1641,10 @@ int main(int argc, char* argv[])
                {
                 return 0;
                }
-                string msg = "创建群聊 " + u + "\n";
+               string n;
+               cout<<"拉入群聊name:";
+               getline(cin,n);
+               string msg = "创建群聊 " + u +n+ "\n";
                SSL_write1(ssl, msg.c_str(), msg.size());
             }
             else if (cmd_name == "13")
@@ -1815,7 +1823,8 @@ cout << "\033[1A\033[2K\r";
             }
         }
         else
-        {string msg = "群聊 " + target + " " + content + "\n";
+        {
+            string msg = "群聊 " + target + " " + content + "\n";
         SSL_write1(ssl, msg.c_str(), msg.size());}
     }
     cout << "消息发送结束。\n";

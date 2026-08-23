@@ -1872,7 +1872,7 @@ if (incr_reply) {
     }
 }
 
-void chuangqun(int ufd, const string& qun)
+void chuangqun(int ufd, const string& qun,const string&name)
  {
     if (!CLIENT(ufd)->logged_in) 
     { 
@@ -1900,6 +1900,11 @@ void chuangqun(int ufd, const string& qun)
         return;
     }
     freeReplyObject(reply);
+    if(!is_friend(CLIENT(ufd)->username,name))
+    {
+        send_message(ufd,"对方不是好友无法拉入群\n");
+        return;
+    }
     reply = (redisReply*)redis_command(redis_conn, "HSET %s owner %s", group_key.c_str(), CLIENT(ufd)->username.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_INTEGER || reply->integer != 1) 
     {
@@ -1911,7 +1916,15 @@ void chuangqun(int ufd, const string& qun)
     reply = (redisReply*)redis_command(redis_conn, "SADD %s %s", members_key.c_str(), CLIENT(ufd)->username.c_str());
     if (reply == nullptr || reply->type != REDIS_REPLY_INTEGER) 
     {
-        send_message(ufd, "加入群成员失败\n");
+        send_message(ufd, "本人加入群成员失败\n");
+        if (reply) freeReplyObject(reply);
+        return;
+    }
+    freeReplyObject(reply);
+     reply = (redisReply*)redis_command(redis_conn, "SADD %s %s", members_key.c_str(), name.c_str());
+    if (reply == nullptr || reply->type != REDIS_REPLY_INTEGER) 
+    {
+        send_message(ufd, "对方加入群成员失败\n");
         if (reply) freeReplyObject(reply);
         return;
     }
@@ -3507,13 +3520,13 @@ void handle_command(int fd, const string& line)
         {
             send_message(fd,"先登录\n");
         }
-        string qun;
-        if (!(iss >> qun)) 
+        string qun,name;
+        if (!(iss >> qun>>name)) 
         { 
             send_message(fd, "群名不能为空\n");
              return; 
         }
-        chuangqun(fd, qun);
+        chuangqun(fd, qun,name);
     }
     else if (cmd == "加入群聊")
      {
