@@ -801,8 +801,19 @@ cout << "DEBUG: rename result:success"  << endl;
   
     string filename = get_filename_meta(file_id, redis);
     string final_path = "./files/" + file_id + "_" + filename;
-
-    int file_fd = open(final_path.c_str(), O_RDONLY);
+    if(ctx.tmp_fd==-1)
+    {
+        ctx.tmp_fd=open(final_path.c_str(), O_RDONLY);
+        if (ctx.tmp_fd < 0) 
+    {
+        
+       
+        perror("open file for download");
+        close_connection(fd);
+        return;
+    }
+    }
+  /*  int file_fd = open(final_path.c_str(), O_RDONLY);
     if (file_fd < 0) 
     {
         
@@ -811,18 +822,19 @@ cout << "DEBUG: rename result:success"  << endl;
         close_connection(fd);
         return;
     }
-   off_t actual_size = lseek(file_fd, 0, SEEK_END);
+        */
+   off_t actual_size = lseek(ctx.tmp_fd, 0, SEEK_END);
     if (actual_size == -1) {
         perror("lseek to end");
-        close(file_fd);
+        close(ctx.tmp_fd);
         close_connection(fd);
         return;
     }
     cerr << "DOWNLOAD: actual file size = " << actual_size << " bytes" << endl;
-   if (lseek(file_fd, offset, SEEK_SET) == -1) 
+   if (lseek(ctx.tmp_fd, offset, SEEK_SET) == -1) 
    {
     perror("lseek");
-    close(file_fd);
+    close(ctx.tmp_fd);
     close_connection(fd);
     return;
     }
@@ -831,7 +843,7 @@ cout << "DEBUG: rename result:success"  << endl;
         auto& ctx = file_contexts[fd];
         ctx.file_id = file_id;
         ctx.download_state = DOWNLOAD_SENDING;
-        ctx.download_file_fd = file_fd;
+        ctx.download_file_fd = ctx.tmp_fd;
         ctx.download_offset = offset;
         ctx.total_sent = 0;
         ctx.download_chunk.clear();
