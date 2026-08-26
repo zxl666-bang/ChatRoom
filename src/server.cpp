@@ -6,6 +6,7 @@
 #include <termios.h>
 #include<unordered_set>
 #include<ulimit.h>
+#include<netinet/tcp.h>
 #ifndef my_bool
 #define my_bool unsigned char
 #endif
@@ -252,8 +253,6 @@ void close_connection(int fd) {
     }
 
     if (is_file_client) {
-        // on_file_connection() takes file_mutex itself. Do not call it while
-        // holding file_mutex.
         on_file_connection(fd, false);
     }
 
@@ -380,7 +379,7 @@ vector<vector<string>>excute_select(const string&sql,const vector<string>&param=
     lock_guard<recursive_mutex> mysql_lock(mysql_mutex);
     if (mysql_conn == nullptr) {
     cerr << "MySQL connection not initialized" << endl;
-    return {}; // 或 return -1;
+    return {}; 
 }
     vector<vector<string>>rows;
     MYSQL_STMT*stmt=mysql_stmt_init(mysql_conn);
@@ -560,9 +559,7 @@ void init_leveldb()
     }
 }
 
-void store_history(const string& sender,
-                   const string& place,
-                   const string& content)
+void store_history(const string& sender,const string& place,const string& content)
 {
     cout << "========== store_history ==========" << endl;
     cout << "sender  = [" << sender << "]" << endl;
@@ -574,32 +571,13 @@ void store_history(const string& sender,
         cerr << "历史数据未初始化，先初始化\n";
         return;
     }
-
     auto now = chrono::system_clock::now();
-
-    auto ms =
-        chrono::duration_cast<chrono::milliseconds>(
-            now.time_since_epoch()
-        ).count();
-
-    string key =
-        "history:" +
-        place + ":" +
-        to_string(ms) + ":" +
-        to_string(rand());
-
+    auto ms =chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()).count();
+    string key = "history:" +place + ":" +to_string(ms) + ":" +to_string(rand());
     string value = sender + ":" + content;
-
     cout << "key   = [" << key << "]" << endl;
     cout << "value = [" << value << "]" << endl;
-
-    leveldb::Status status =
-        history_db->Put(
-            leveldb::WriteOptions(),
-            key,
-            value
-        );
-
+    leveldb::Status status =history_db->Put(leveldb::WriteOptions(),key,value);
     cout << "Put status = [" << status.ToString() << "]" << endl;
     cout << "====================================" << endl;
 }
@@ -732,7 +710,6 @@ void zhuxiao(int fd, const string& name, const string& password) {
         send_message(fd, "用户不存在\n");
         return;
     }
-
     string sql1 = "SELECT password_hash, email FROM users WHERE username = ?";
     auto res = excute_select(sql1, {name});
     if (res.empty()) {
@@ -3157,7 +3134,8 @@ void jiesan(int ufd,const string&qun)
         redis_command(redis_conn,"DEL %s",group_key.c_str());
         string group1_key="jiaqunshengqing"+qun;
         redis_command(redis_conn,"DEL %s",group1_key.c_str());
-if (history_db != nullptr) {
+if (history_db != nullptr) 
+{
     leveldb::ReadOptions read_opts;
     leveldb::WriteOptions write_opts;
     string prefix = "history:group:" + qun + ":";
@@ -3286,13 +3264,11 @@ void send_pending_data(int fd) {
             continue;
         }
         if (n == -2 || n == -3) {
-            // 遇到阻塞，不修改 epoll 事件
             return;
         }
         close_connection(fd);
         return;
     }
-    // 发送完所有数据后清空缓冲区
     c->send_buffer.clear();
     c->send_offset = 0;
 }
@@ -3512,6 +3488,7 @@ void handle_command(int fd, const string& line)
             send_message(fd,"读取目标不能为空\n");
             return;
         }
+    string target, filename, filesize_str;
         Read(fd,name);
     }
     else if (cmd == "创建群聊")
@@ -3913,7 +3890,6 @@ void handle_command(int fd, const string& line)
     lock_guard<recursive_mutex> lk(*cp->state_mutex);
     Client& c = *cp;
     if (c.handshak_down) return true;
-
     ERR_clear_error();
     int ret = SSL_accept(c.ssl);
 
@@ -3963,7 +3939,7 @@ void cleancurl()
 
 
 static void dispatch_command(int fd, const string& line) {
-    cerr << "[DISPATCH] fd=" << fd << " line=" << line << endl;
+   // cerr << "[DISPATCH] fd=" << fd << " line=" << line << endl;
     shared_ptr<Client> client = CLIENT(fd);
     if (!client || line.empty()) return;
     auto task=[fd,line,client]
@@ -4051,6 +4027,7 @@ int main()
     ERR_print_errors_fp(stderr);
     ERR_clear_error();
     SSL_CTX*ctx=SSL_CTX_new(TLS_server_method());
+    SSL_CTX_set_options(ctx,SSL_OP_ENABLE_KTLS);
     if (!ctx) {
         ERR_print_errors_fp(stderr);
         return 1;
@@ -4096,7 +4073,7 @@ int main()
     listen(listen_fd, SOMAXCONN);
     listen(file_listen_fd, SOMAXCONN);
     set_nonblocking(listen_fd);
-     set_nonblocking(file_listen_fd);
+    set_nonblocking(file_listen_fd);
     struct epoll_event ev{};
     ev.events = EPOLLIN;
     ev.data.fd =listen_fd;
@@ -4115,14 +4092,15 @@ int main()
             perror("epoll_wait");
             break;
         }
-
         for (int i = 0; i < nfds; ++i) {
             int fd = events[i].data.fd;
             uint32_t revents = events[i].events;
 
-            if (fd == listen_fd || fd == file_listen_fd) {
+            if (fd == listen_fd || fd == file_listen_fd) 
+            {
                 const bool is_file_listener = (fd == file_listen_fd);
-                while (true) {
+                while (true) 
+                {
                     int client_fd = accept(fd, nullptr, nullptr);
                     if (client_fd < 0) {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
@@ -4131,12 +4109,25 @@ int main()
                         break;
                     }
                       int heart=1;
-                    setsockopt(client_fd,SOL_SOCKET,SO_KEEPALIVE,&heart,sizeof(heart));  
-                     int sndbuf = 4 * 1024 * 1024;
-     int rcvbuf = 4 * 1024 * 1024;
-if (setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
-    perror("setsockopt SO_SNDBUF");
+                     setsockopt(client_fd,SOL_SOCKET,SO_KEEPALIVE,&heart,sizeof(heart));  
+                     int keepidle = 1800;  
+int keepintvl = 30;
+int keepcnt = 3;
+if (setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle)) < 0) {
+    perror("setsockopt TCP_KEEPIDLE");
 }
+if (setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl)) < 0) {
+    perror("setsockopt TCP_KEEPINTVL");
+}
+if (setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt)) < 0) {
+    perror("setsockopt TCP_KEEPCNT");
+}
+
+                     int sndbuf = 4 * 1024 * 1024;
+                     int rcvbuf = 4 * 1024 * 1024;
+                    if (setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
+    perror("setsockopt SO_SNDBUF");
+}   
 if (setsockopt(client_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
     perror("setsockopt SO_RCVBUF");
 }               
@@ -4233,9 +4224,7 @@ if (is_file) {
     }
     if (!CLIENT(fd))
         continue;
-    if (revents & (EPOLLERR |
-                   EPOLLHUP |
-                   EPOLLRDHUP)) {
+    if (revents & (EPOLLERR |EPOLLHUP |EPOLLRDHUP)) {
 
         cerr << "[EPOLL] file fd="
              << fd
@@ -4252,8 +4241,7 @@ if (revents & EPOLLIN) {
 
     char buf[4096];
 
-    ssize_t n =
-        tls_read(fd, buf, sizeof(buf));
+    ssize_t n =tls_read(fd, buf, sizeof(buf));
 
     if (n > 0) {
 
@@ -4356,9 +4344,7 @@ if (!CLIENT(fd))
     continue;
 
 
-if (revents & (EPOLLERR |
-               EPOLLHUP |
-               EPOLLRDHUP)) {
+if (revents & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
 
     close_connection(fd);
 }

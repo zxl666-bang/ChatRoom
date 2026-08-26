@@ -19,6 +19,7 @@
 #include<vector>
 #include <cstdlib>
 #include<sys/stat.h>
+#include<sys/sendfile.h>
 #include <sys/socket.h>
 #include<filesystem>
 #include "server.h"
@@ -128,7 +129,7 @@ void cleanup_temp_files(redisContext* redis) {
                 now.time_since_epoch() - last_write.time_since_epoch()
             );
 
-            if (age.count() < EXPIRY_HOURS) continue;  // 未超时，跳过
+            if (age.count() < EXPIRY_HOURS) continue; 
 
             string file_id = filename.substr(0, filename.find(".tmp"));
 
@@ -508,18 +509,18 @@ void send_next_chunk(int fd) {
     auto& ctx = fit->second;
    //  cerr << "[SEND] download_state=" << ctx.download_state 
    //      << ", total_sent=" << ctx.total_sent << endl;
-    cerr.flush();
-    if (ctx.download_state != DOWNLOAD_SENDING) return;
-
+ //   cerr.flush();
     constexpr size_t CHUNK_SIZE = 4* 1024* 1024;
     constexpr size_t MAX_BYTES_PER_EVENT = 4*1024 * 1024;
     size_t budget = MAX_BYTES_PER_EVENT;
-
+    if (ctx.download_state != DOWNLOAD_SENDING) return;
+    
+   
     while (budget > 0) {
         
         if (ctx.chunk_sent >= ctx.download_chunk.size()) {
         //     cerr << "[SEND] reading next chunk, offset=" << ctx.download_offset + ctx.total_sent << endl;
-            cerr.flush();
+          //  cerr.flush();
             ctx.download_chunk.clear();
             ctx.chunk_sent = 0;
 
@@ -549,7 +550,7 @@ void send_next_chunk(int fd) {
                 memcpy(ctx.download_chunk.data() + 29, data.data(), data.size());
             } else if (bytes_read == 0) {
                 // cerr << "[SEND] EOF" << endl;
-                 cerr << "DOWNLOAD: file read EOF, total_sent = " << ctx.total_sent << " bytes" << endl;
+              //   cerr << "DOWNLOAD: file read EOF, total_sent = " << ctx.total_sent << " bytes" << endl;
                 ctx.file_read_done=true;
                   if (ctx.download_chunk.empty() && ctx.chunk_sent == 0) {
         close(ctx.download_file_fd);
@@ -610,6 +611,7 @@ void send_next_chunk(int fd) {
     ev.data.fd = fd;
     epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 }
+
 
 
 void process(int fd,redisContext*redis,const vector<char>&buf)
@@ -776,7 +778,7 @@ cout << "DEBUG: rename result:success"  << endl;
  /*  redis_command(redis, "DEL %s", progress_key.c_str());*/
     string complete_msg = "UPLOAD_COMPLETE " + file_id + "\n";
     send_message(fd, complete_msg);
-   cout << "DEBUG: About to call notify_reciver" << endl;
+    cout << "DEBUG: About to call notify_reciver" << endl;
     notify_reciver(redis, file_id);
     cout << "Upload complete, notifying receiver..." << endl;
     return;
@@ -1004,7 +1006,11 @@ void on_file_data(int fd, redisContext* redis)
                 );
 
                 ctx.total_len =
-                    ntohl(net_len);
+                    ntohl(net_len);if (!get_client(fd)) {
+
+                    return;
+                }
+
 
                 ctx.buffer.erase(
                     ctx.buffer.begin(),
@@ -1039,9 +1045,11 @@ void on_file_data(int fd, redisContext* redis)
 */
                 ctx.state = PARSE_BODY;
             }
-
-
             if (ctx.state == PARSE_BODY) {
+if (!get_client(fd)) {
+
+                    return;
+                }
 
                 if (ctx.buffer.size() <
                     ctx.total_len) {
@@ -1056,8 +1064,7 @@ void on_file_data(int fd, redisContext* redis)
                     return;
                 }
 
-                vector<char> packet(
-                    ctx.buffer.begin(),
+                vector<char> packet(ctx.buffer.begin(),
                     ctx.buffer.begin()
                         + ctx.total_len
                 );
@@ -1077,7 +1084,11 @@ void on_file_data(int fd, redisContext* redis)
                      << "size="
                      << packet.size()
                      << ", remain_buffer="
-                     << ctx.buffer.size()
+                     << ctx.buffer.size()if (!get_client(fd)) {
+
+                    return;
+                }
+
                      << endl;
 
 */
@@ -1093,8 +1104,7 @@ void on_file_data(int fd, redisContext* redis)
                     return;
                 }
 
-                if (file_contexts.find(fd) ==
-                    file_contexts.end()) {
+                if (file_contexts.find(fd) == file_contexts.end()) {
 
                     return;
                 }
@@ -1105,11 +1115,9 @@ void on_file_data(int fd, redisContext* redis)
                 if (fit == file_contexts.end())
                     return;
 
-                FILETRANSFER& new_ctx =
-                    fit->second;
+                FILETRANSFER& new_ctx =fit->second;
 
-                if (new_ctx.download_state ==
-                    DOWNLOAD_SENDING) {
+                if (new_ctx.download_state ==DOWNLOAD_SENDING) {
 
                     send_next_chunk(fd);
                     return;

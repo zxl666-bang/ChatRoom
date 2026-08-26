@@ -37,19 +37,16 @@ struct Client {
     SSL* ssl = nullptr;
     bool handshak_down = false;
 
-    // Only the epoll thread performs SSL_read/SSL_write.
-    // Worker threads only append to the outgoing buffer.
     string send_buffer;
     size_t send_offset = 0;
     string recv_buffer;
 
-    // Stable per-client synchronization objects. shared_ptr keeps Client copyable.
     shared_ptr<recursive_mutex> state_mutex = make_shared<recursive_mutex>();
     shared_ptr<recursive_mutex> send_mutex = make_shared<recursive_mutex>();
     shared_ptr<recursive_mutex> io_mutex = make_shared<recursive_mutex>();
     shared_ptr<recursive_mutex> route_mutex = make_shared<recursive_mutex>();
 
-    atomic<bool> closing{false};
+    atomic<bool> closing{false};//这个bool不会被线程打断，是原子操作
     uint64_t generation = 0;
     pmr::deque<function<void()>>task;
     mutex task_lock;
@@ -70,7 +67,6 @@ extern SSL*ssl;
 extern int epoll_fd;
 extern redisContext* redis_conn;
 
-// Thread-safe hiredis wrapper. All server/file-transfer Redis calls should use it.
 redisReply* redis_command(redisContext* c, const char* fmt, ...);
 shared_ptr<Client> get_client(int fd);
 int find_client_fd_by_name(const string& name);

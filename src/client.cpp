@@ -297,8 +297,9 @@ if (setsockopt(file_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
     );
 
     if (!file) {
-{ lock_guard<mutex> lock(menu_lock);
-        cerr << "定位文件偏移失败"<< endl;
+{ 
+    lock_guard<mutex> lock(menu_lock);
+    cerr << "定位文件偏移失败"<< endl;
 }
         file.close();
 
