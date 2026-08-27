@@ -17,7 +17,8 @@ enum ParseState {
 
 enum DownloadState {
     DOWNLOAD_IDLE,
-    DOWNLOAD_SENDING
+    DOWNLOAD_SENDING,
+    DOWNLOAD_FINISHED 
 };
 
 struct FILETRANSFER {
@@ -29,6 +30,7 @@ struct FILETRANSFER {
     uint32_t header_bytes = 0;
     uint32_t total_len = 0;
     vector<char> buffer;
+    string proto_buffer;
     DownloadState download_state = DOWNLOAD_IDLE;
     int download_file_fd = -1;
     uint64_t download_offset = 0;

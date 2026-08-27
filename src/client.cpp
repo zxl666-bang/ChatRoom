@@ -12,6 +12,8 @@
 #include<vector>
 #include<endian.h>
 #include<sys/select.h>
+#include <byteswap.h>
+#include <endian.h>
 #include<sys/stat.h>
 #include <arpa/inet.h>
 #include<mutex>
@@ -24,6 +26,8 @@
 #include <openssl/ssl.h>      // 核心 SSL/TLS 函数，如 SSL_new、SSL_read、SSL_write
 #include <openssl/err.h>      // 错误处理，如 ERR_print_errors_fp、ERR_get_error
 #include <openssl/crypto.h>   // 加密基础函数（可选，但若使用锁回调则需）
+#include "chat.pb.h"
+#include "chat_utils.h" 
 #define DEBUG_UPLOAD
 using namespace std;
 const string SALT="chatroomsalt";
@@ -47,6 +51,7 @@ mutex upload_mtu;
 size_t wrong=0;
 bool serverdisconnect=false;
 char*ip;
+
 string simplifyPath(string path) {
         vector<string> stack;
         string component;
@@ -151,32 +156,45 @@ string username;
 bool SSL_write1(SSL* s, const void* buf, int num) {
     if (!s || num < 0) return false;
     lock_guard<mutex> lock(ssl_mtu);
-
-    const char* data = static_cast<const char*>(buf);
-    int sent = 0;
-    while (sent < num) {
-        int n = SSL_write(s, data + sent, num - sent);
-        if (n > 0) {
-            sent += n;
-            continue;
-        }
-
-        int err = SSL_get_error(s, n);
-        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-            this_thread::yield();
-            continue;
-        }
-        {
-       lock_guard<mutex> lock(menu_lock);
-        cerr << "SSL_write error: " << err << endl;
-        }
-                serverdisconnect=true;
-        ERR_print_errors_fp(stderr);
+    
+    chat::ChatPacket packet;
+    packet.set_type(chat::ChatPacket::TEXT);
+    string text(static_cast<const char*>(buf), static_cast<size_t>(num));
+    packet.set_text(text);
+    packet.set_payload(text);
+    
+    string body;
+    if (!packet.SerializeToString(&body) || body.size() > UINT32_MAX) {
+        cerr << "[SSL_write1] Serialize failed" << endl;
         return false;
+    }
+    
+    // 发送长度头
+    uint32_t net_len = htonl(static_cast<uint32_t>(body.size()));
+    if (SSL_write(s, &net_len, sizeof(net_len)) != sizeof(net_len)) {
+        serverdisconnect = true;
+        return false;
+    }
+    
+    // 发送数据体
+    size_t sent = 0;
+    while (sent < body.size()) {
+        int n = SSL_write(s, body.data() + sent, static_cast<int>(body.size() - sent));
+        if (n > 0) {
+            sent += static_cast<size_t>(n);
+        } else {
+            int err = SSL_get_error(s, n);
+            if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                this_thread::yield();
+                continue;
+            }
+            serverdisconnect = true;
+            ERR_print_errors_fp(stderr);
+            return false;
+        }
     }
     return true;
 }
-
 static bool SSL_read_all(SSL* s, void* buf, size_t len) {
     if (!s) return false;
     char* p = static_cast<char*>(buf);
@@ -206,22 +224,21 @@ static bool SSL_read_all(SSL* s, void* buf, size_t len) {
     }
     return true;
 }
-
 void start_upload(const string& file_id, const string& filepath, size_t offset)
 {
-    { 
+    {
         lock_guard<mutex> lock(menu_lock);
-    cerr << "start_upload: filepath=[" << filepath << "], offset=" << offset  << endl;
+        cerr << "start_upload: filepath=[" << filepath
+             << "], offset=" << offset << endl;
     }
-    int file_sock = socket(AF_INET, SOCK_STREAM, 0);
 
+    int file_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (file_sock < 0) {
         perror("socket");
         return;
     }
 
     SSL* ssl1 = SSL_new(ctx);
-
     if (!ssl1) {
         ERR_print_errors_fp(stderr);
         close(file_sock);
@@ -234,83 +251,105 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(8889);
 
-    if (inet_pton(AF_INET,ip,&addr.sin_addr) != 1) {
-{ lock_guard<mutex> lock(menu_lock);
-        cerr << "服务器地址错误" << endl;
-}
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "服务器地址错误" << endl;
+        }
+
         SSL_free(ssl1);
         close(file_sock);
-
         return;
     }
-     int sndbuf = 4 * 1024 * 1024;
-     int rcvbuf = 4 * 1024 * 1024;
-if (setsockopt(file_sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
-    perror("setsockopt SO_SNDBUF");
-}
-if (setsockopt(file_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
-    perror("setsockopt SO_RCVBUF");
-}
-    if (connect(file_sock,(sockaddr*)&addr, sizeof(addr)) < 0) {
+
+    int sndbuf = 4 * 1024 * 1024;
+    int rcvbuf = 4 * 1024 * 1024;
+
+    if (setsockopt(file_sock,
+                   SOL_SOCKET,
+                   SO_SNDBUF,
+                   &sndbuf,
+                   sizeof(sndbuf)) < 0) {
+        perror("setsockopt SO_SNDBUF");
+    }
+
+    if (setsockopt(file_sock,
+                   SOL_SOCKET,
+                   SO_RCVBUF,
+                   &rcvbuf,
+                   sizeof(rcvbuf)) < 0) {
+        perror("setsockopt SO_RCVBUF");
+    }
+
+    if (connect(file_sock,
+                reinterpret_cast<sockaddr*>(&addr),
+                sizeof(addr)) < 0) {
 
         perror("连接文件服务器失败");
 
         SSL_free(ssl1);
         close(file_sock);
-
         return;
     }
-{ lock_guard<mutex> lock(menu_lock);
-    cerr << "[UPLOAD] TCP connected to 8889"
-         << endl;
-}
+
+    {
+        lock_guard<mutex> lock(menu_lock);
+        cerr << "[UPLOAD] TCP connected to 8889" << endl;
+    }
+
     if (SSL_connect(ssl1) != 1) {
-{ lock_guard<mutex> lock(menu_lock);
-        cerr << "TLS 文件上传握手失败"
-             << endl;
-}
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "TLS 文件上传握手失败" << endl;
+        }
+
         ERR_print_errors_fp(stderr);
 
         SSL_free(ssl1);
         close(file_sock);
-
         return;
     }
-{ lock_guard<mutex> lock(menu_lock);
-    cerr << "[UPLOAD] TLS handshake success"<< endl;
-}
+
+    {
+        lock_guard<mutex> lock(menu_lock);
+        cerr << "[UPLOAD] TLS handshake success" << endl;
+    }
+
     ifstream file(filepath, ios::binary);
 
     if (!file) {
-{ lock_guard<mutex> lock(menu_lock);
-        cerr << "无法重新打开文件"<< endl;
-}
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "无法重新打开文件: " << filepath << endl;
+        }
+
         SSL_shutdown(ssl1);
         SSL_free(ssl1);
         close(file_sock);
-
         return;
     }
 
-    file.seekg(
-        static_cast<streamoff>(offset)
-    );
+    // 定位到断点续传位置
+    file.seekg(static_cast<streamoff>(offset));
 
     if (!file) {
-{ 
-    lock_guard<mutex> lock(menu_lock);
-    cerr << "定位文件偏移失败"<< endl;
-}
-        file.close();
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "定位文件偏移失败，offset="
+                 << offset << endl;
+        }
 
+        file.close();
         SSL_shutdown(ssl1);
         SSL_free(ssl1);
         close(file_sock);
-
         return;
     }
 
-    const size_t CHUNK_SIZE =4* 1024 * 1024;
+    /*
+     * 每个 protobuf FILE 数据包最多携带 4MB。
+     */
+    constexpr size_t CHUNK_SIZE = 4 * 1024 * 1024;
 
     vector<char> buffer(CHUNK_SIZE);
 
@@ -318,394 +357,1383 @@ if (setsockopt(file_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
 
     while (file.good()) {
 
-        file.read(buffer.data(),static_cast<streamsize>(buffer.size()));
+        file.read(
+            buffer.data(),
+            static_cast<streamsize>(buffer.size())
+        );
 
         streamsize got = file.gcount();
 
-        if (got <= 0)
+        if (got <= 0) {
             break;
+        }
 
-        size_t read_len =
-            static_cast<size_t>(got);
+        size_t read_len = static_cast<size_t>(got);
 
-        uint32_t body_len =static_cast<uint32_t>(1 + 16 + 8 + read_len);
+        /*
+         * =====================================================
+         * 构造 Protobuf 文件数据包
+         *
+         * 不再使用：
+         *
+         *   1 byte command
+         *   16 byte file_id
+         *   8 byte offset
+         *   file data
+         *
+         * 直接使用 ChatPacket。
+         * =====================================================
+         */
+        chat::ChatPacket packet;
+
+        packet.set_type(chat::ChatPacket::FILE);
+
+        packet.set_file_id(file_id);
+
+        packet.set_offset(
+            static_cast<uint64_t>(offset)
+        );
+
+        packet.set_payload(
+            buffer.data(),
+            read_len
+        );
+
+        /*
+         * protobuf 序列化
+         */
+        string body;
+
+        if (!packet.SerializeToString(&body)) {
+            {
+                lock_guard<mutex> lock(menu_lock);
+                cerr << "[UPLOAD] protobuf 序列化失败" << endl;
+            }
+
+            success = false;
+            break;
+        }
+
+        if (body.size() > UINT32_MAX) {
+            {
+                lock_guard<mutex> lock(menu_lock);
+                cerr << "[UPLOAD] protobuf 数据包过大" << endl;
+            }
+
+            success = false;
+            break;
+        }
+
+        /*
+         * =====================================================
+         * 外层 framing：
+         *
+         *   4 byte protobuf body length
+         *   +
+         *   protobuf body
+         *
+         * 注意：
+         *
+         * 这里绝对不能调用 SSL_write1()
+         *
+         * 因为 SSL_write1() 会再次把数据包装成 TEXT。
+         * =====================================================
+         */
 
         uint32_t net_len =
-            htonl(body_len);
+            htonl(static_cast<uint32_t>(body.size()));
 
-        
+        /*
+         * 发送 4 字节长度
+         */
+        size_t header_sent = 0;
 
-        if (!SSL_write1(ssl1, &net_len, sizeof(net_len))) {
-{ lock_guard<mutex> lock(menu_lock);
-            cerr << "[UPLOAD] "   << "发送长度头失败" << endl;
-}
-            ERR_print_errors_fp(stderr);
+        while (header_sent < sizeof(net_len)) {
 
-            success = false;
-            break;
-        }
-
-    
-
-        vector<char> packet(body_len);
-
-        packet[0] = 0x01;
-
-        char file_id_buf[16];
-
-        memset( file_id_buf,' ', sizeof(file_id_buf));
-        memcpy( file_id_buf,file_id.data(),min( file_id.size(), sizeof(file_id_buf)));
-        memcpy( packet.data() + 1, file_id_buf, sizeof(file_id_buf));
-
-        uint64_t net_offset =htobe64(offset);
-
-        memcpy(packet.data() + 1 + 16, &net_offset,  sizeof(net_offset));
-
-        memcpy(packet.data() + 1 + 16 + 8, buffer.data(), read_len);
-        if (!SSL_write1(
+            int n = SSL_write(
                 ssl1,
-                packet.data(),
-                static_cast<int>(packet.size()))) {
-{ lock_guard<mutex> lock(menu_lock);
-            cerr << "[UPLOAD] "
-                 << "发送文件数据包失败"
-                 << endl;
-}
+                reinterpret_cast<const char*>(&net_len)
+                    + header_sent,
+                static_cast<int>(
+                    sizeof(net_len) - header_sent
+                )
+            );
+
+            if (n > 0) {
+                header_sent += static_cast<size_t>(n);
+                continue;
+            }
+
+            int err = SSL_get_error(ssl1, n);
+
+            if (err == SSL_ERROR_WANT_READ ||
+                err == SSL_ERROR_WANT_WRITE) {
+
+                this_thread::yield();
+                continue;
+            }
+
+            {
+                lock_guard<mutex> lock(menu_lock);
+                cerr << "[UPLOAD] 发送 protobuf 长度失败"
+                     << endl;
+            }
+
             ERR_print_errors_fp(stderr);
 
             success = false;
             break;
         }
 
+        if (!success) {
+            break;
+        }
+
+        /*
+         * 发送 protobuf body
+         */
+        size_t sent = 0;
+
+        while (sent < body.size()) {
+
+            int n = SSL_write(
+                ssl1,
+                body.data() + sent,
+                static_cast<int>(body.size() - sent)
+            );
+
+            if (n > 0) {
+                sent += static_cast<size_t>(n);
+                continue;
+            }
+
+            int err = SSL_get_error(ssl1, n);
+
+            if (err == SSL_ERROR_WANT_READ ||
+                err == SSL_ERROR_WANT_WRITE) {
+
+                this_thread::yield();
+                continue;
+            }
+
+            {
+                lock_guard<mutex> lock(menu_lock);
+                cerr << "[UPLOAD] 发送 protobuf 文件数据失败"
+                     << endl;
+            }
+
+            ERR_print_errors_fp(stderr);
+
+            success = false;
+            break;
+        }
+
+        if (!success) {
+            break;
+        }
+
+        /*
+         * 当前 chunk 成功发送。
+         */
         offset += read_len;
-
-      
-   // cerr << "[UPLOAD] sent chunk=" << read_len << ", total=" << offset << endl;
-
     }
 
     file.close();
 
     if (!success) {
-{ lock_guard<mutex> lock(menu_lock);
-        cerr << "[UPLOAD] "
-             << "文件发送失败"
-             << endl;
-}
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "[UPLOAD] 文件发送失败" << endl;
+        }
+
         SSL_shutdown(ssl1);
         SSL_free(ssl1);
         close(file_sock);
-
         return;
     }
 
-{ lock_guard<mutex> lock(menu_lock);
-    cerr << "[UPLOAD] "
-         << "所有文件数据已经发送，"
-         << "等待服务器 UPLOAD_COMPLETE..."
-         << endl;
-}
-    string response;
+    /*
+     * =====================================================
+     * 文件数据全部发送完成。
+     *
+     * 发送一个 FILE 包作为结束标志：
+     *
+     * payload 为空
+     * offset = 最终文件大小
+     *
+     * =====================================================
+     */
+    chat::ChatPacket finish_packet;
 
-    char recv_buf[4096];
+    finish_packet.set_type(chat::ChatPacket::FILE);
 
+    finish_packet.set_file_id(file_id);
+
+    finish_packet.set_offset(
+        static_cast<uint64_t>(offset)
+    );
+
+    /*
+     * payload 为空，表示文件发送结束。
+     */
+    finish_packet.clear_payload();
+
+    string finish_body;
+
+    if (!finish_packet.SerializeToString(&finish_body)) {
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "[UPLOAD] FILE_FINISH protobuf 序列化失败"
+                 << endl;
+        }
+
+        SSL_shutdown(ssl1);
+        SSL_free(ssl1);
+        close(file_sock);
+        return;
+    }
+
+    if (finish_body.size() > UINT32_MAX) {
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "[UPLOAD] FILE_FINISH 数据包过大"
+                 << endl;
+        }
+
+        SSL_shutdown(ssl1);
+        SSL_free(ssl1);
+        close(file_sock);
+        return;
+    }
+
+    uint32_t finish_len =
+        htonl(static_cast<uint32_t>(finish_body.size()));
+
+    /*
+     * 发送 FILE_FINISH 的 protobuf 长度
+     */
+    size_t finish_header_sent = 0;
+
+    while (finish_header_sent < sizeof(finish_len)) {
+
+        int n = SSL_write(
+            ssl1,
+            reinterpret_cast<const char*>(&finish_len)
+                + finish_header_sent,
+            static_cast<int>(
+                sizeof(finish_len) - finish_header_sent
+            )
+        );
+
+        if (n > 0) {
+            finish_header_sent += static_cast<size_t>(n);
+            continue;
+        }
+
+        int err = SSL_get_error(ssl1, n);
+
+        if (err == SSL_ERROR_WANT_READ ||
+            err == SSL_ERROR_WANT_WRITE) {
+
+            this_thread::yield();
+            continue;
+        }
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "[UPLOAD] 发送 FILE_FINISH 长度失败"
+                 << endl;
+        }
+
+        ERR_print_errors_fp(stderr);
+
+        SSL_shutdown(ssl1);
+        SSL_free(ssl1);
+        close(file_sock);
+        return;
+    }
+
+    /*
+     * 发送 FILE_FINISH protobuf body
+     */
+    size_t finish_sent = 0;
+
+    while (finish_sent < finish_body.size()) {
+
+        int n = SSL_write(
+            ssl1,
+            finish_body.data() + finish_sent,
+            static_cast<int>(
+                finish_body.size() - finish_sent
+            )
+        );
+
+        if (n > 0) {
+            finish_sent += static_cast<size_t>(n);
+            continue;
+        }
+
+        int err = SSL_get_error(ssl1, n);
+
+        if (err == SSL_ERROR_WANT_READ ||
+            err == SSL_ERROR_WANT_WRITE) {
+
+            this_thread::yield();
+            continue;
+        }
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "[UPLOAD] 发送 FILE_FINISH 失败"
+                 << endl;
+        }
+
+        ERR_print_errors_fp(stderr);
+
+        SSL_shutdown(ssl1);
+        SSL_free(ssl1);
+        close(file_sock);
+        return;
+    }
+
+    {
+        lock_guard<mutex> lock(menu_lock);
+        cerr << "[UPLOAD] 所有文件数据已经发送，"
+             << "等待服务器 UPLOAD_COMPLETE..."
+             << endl;
+    }
+
+    /*
+     * =====================================================
+     * 等待服务器返回 protobuf。
+     * =====================================================
+     */
+    string recv_buffer;
     bool server_confirmed = false;
+string response;
+    while (!server_confirmed) {
 
-    while (true)
-     {
+        char recv_buf[64 * 1024];
 
         int n = SSL_read(
             ssl1,
             recv_buf,
-            sizeof(recv_buf) - 1
+            sizeof(recv_buf)
         );
 
         if (n > 0) {
 
-            recv_buf[n] = '\0';
-
-            response.append(
+            recv_buffer.append(
                 recv_buf,
-                n
+                static_cast<size_t>(n)
             );
-{ lock_guard<mutex> lock(menu_lock);
-            cerr << "[UPLOAD] "
-                 << "server response: ["
-                 << string(recv_buf, n)
-                 << "]"
-                 << endl;
-}
-            size_t pos;
 
-            while ((pos = response.find('\n'))
-                   != string::npos) {
+            /*
+             * 一个 SSL_read 可能收到：
+             *
+             *   半个 protobuf
+             *
+             * 或：
+             *
+             *   多个 protobuf
+             *
+             * 所以这里循环拆包。
+             */
+            while (recv_buffer.size() >= 4) {
 
-                string line =
-                    response.substr(0, pos);
+                uint32_t net_len = 0;
 
-                response.erase(
-                    0,
-                    pos + 1
+                memcpy(
+                    &net_len,
+                    recv_buffer.data(),
+                    sizeof(net_len)
                 );
 
-                if (!line.empty() &&
-                    line.back() == '\r') {
+                uint32_t body_len = ntohl(net_len);
 
-                    line.pop_back();
+                /*
+                 * 防止错误长度导致异常。
+                 */
+                if (body_len > 16 * 1024 * 1024) {
+
+                    {
+                        lock_guard<mutex> lock(menu_lock);
+                        cerr << "[UPLOAD] 服务端 protobuf 包过大: "
+                             << body_len
+                             << endl;
+                    }
+
+                    server_confirmed = false;
+                    break;
                 }
-{ lock_guard<mutex> lock(menu_lock);
-                cerr << "[UPLOAD] "
-                     << "server line=["
-                     << line
-                     << "]"
-                     << endl;
-}
-                string expected =
-                    "UPLOAD_COMPLETE " + file_id;
 
-                if (line == expected) {
+                /*
+                 * 半包。
+                 */
+                if (recv_buffer.size() <
+                    4 + static_cast<size_t>(body_len)) {
 
-                    server_confirmed = true;
-{ lock_guard<mutex> lock(menu_lock);
-                    cerr << "[UPLOAD] "
-                         << "服务器确认文件上传完成"
-                         << endl;
+                    break;
+                }
+
+                /*
+                 * 提取 protobuf body。
+                 */
+                string body =
+                    recv_buffer.substr(
+                        4,
+                        body_len
+                    );
+
+                /*
+                 * 删除已经处理的数据。
+                 */
+                recv_buffer.erase(
+                    0,
+                    4 + static_cast<size_t>(body_len)
+                );
+
+                chat::ChatPacket response_packet;
+
+                if (!response_packet.ParseFromString(body)) {
+
+                    {
+                        lock_guard<mutex> lock(menu_lock);
+                        cerr << "[UPLOAD] 服务端 protobuf 解析失败"
+                             << endl;
+                    }
+
+                    continue;
+                }
+
+                /*
+                 * 当前服务端 send_message()
+                 * 使用 TEXT 类型返回：
+                 *
+                 *     UPLOAD_COMPLETE xxx
+                 *
+                 * 所以这里继续兼容你的现有服务器。
+                 */
+                string line = response_packet.text();
+
+if (line.empty()) {
+    line = response_packet.payload();
 }
+
+if (line == "UPLOAD_COMPLETE " + file_id) {
+
+    {
+        lock_guard<mutex> lock(menu_lock);
+        cerr << "[UPLOAD] server confirmed: "
+             << line << endl;
+    }
+
+    server_confirmed = true;
+    break;
+}
+                if (server_confirmed) {
                     break;
                 }
             }
 
-            if (server_confirmed)
-            {
-                break;
-            }
             continue;
         }
 
-        int ssl_err =
-            SSL_get_error(ssl1, n);
+        int err = SSL_get_error(ssl1, n);
 
-        if (ssl_err == SSL_ERROR_ZERO_RETURN) {
-{ lock_guard<mutex> lock(menu_lock);
-            cerr << "[UPLOAD] "
-                 << "服务器关闭了 TLS 连接"
-                 << endl;
-}
+        if (err == SSL_ERROR_WANT_READ ||
+            err == SSL_ERROR_WANT_WRITE) {
+
+            this_thread::yield();
+            continue;
+        }
+
+        if (err == SSL_ERROR_ZERO_RETURN) {
+
+            {
+                lock_guard<mutex> lock(menu_lock);
+                cerr << "[UPLOAD] 服务端关闭了文件连接"
+                     << endl;
+            }
+
             break;
         }
 
-        if (ssl_err == SSL_ERROR_WANT_READ ||
-            ssl_err == SSL_ERROR_WANT_WRITE) {
-
-            continue;
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "[UPLOAD] 等待服务器确认时 SSL_read 失败，"
+                 << "error=" << err
+                 << endl;
         }
-{ lock_guard<mutex> lock(menu_lock);
-        cerr << "[UPLOAD] "
-             << "等待服务器确认时 SSL_read 失败, error="
-             << ssl_err
-             << endl;
-}
+
         ERR_print_errors_fp(stderr);
 
         break;
     }
 
     if (server_confirmed) {
-{ lock_guard<mutex> lock(menu_lock);
-        cout << "文件上传成功，总偏移量: "
-             << offset
-             << endl;}
-              {
-                    lock_guard<mutex> lock(upload_mtu);
-                    is_upload=false;
-                }
-                send_menu();
 
-    } 
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cout << "文件上传成功，总大小="
+                 << offset
+                 << " 字节"
+                 << endl;
+        }
+
+        {
+            lock_guard<mutex> lock(upload_mtu);
+            is_upload = false;
+        }
+
+        send_menu();
+
+    } else {
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+            cerr << "[UPLOAD] 文件传送失败："
+                 << "服务器没有返回 UPLOAD_COMPLETE"
+                 << endl;
+        }
+
+        {
+            lock_guard<mutex> lock(upload_mtu);
+            is_upload = false;
+        }
+    }
 
     SSL_shutdown(ssl1);
     SSL_free(ssl1);
     close(file_sock);
 }
-
-void start_download(const string& file_id, const string& filepath) {
+void start_download(const string& file_id, const string& filepath)
+{
     bool success = true;
     size_t local_size = 0;
+
+    /*
+     * ============================================================
+     * 1. 检查本地文件
+     * ============================================================
+     */
     ifstream local_file(filepath, ios::binary | ios::ate);
+
     if (local_file.is_open()) {
-        local_size = static_cast<size_t>(local_file.tellg());
+
+        local_size = static_cast<size_t>(
+            local_file.tellg()
+        );
+
         local_file.close();
-       if (local_size > 0) {
-      //      cout << "本地已有 " << local_size << " 字节，将从该位置续传" << endl;
-      { lock_guard<mutex> lock(menu_lock);
-        cout<<"本地已有同名文件,请更改文件名后重新下载"<<endl;
-      return;
-        }}
-    } 
+
+        /*
+         * 你原来的逻辑：
+         * 如果文件已经存在，不允许直接覆盖。
+         */
+        if (local_size > 0) {
+
+            {
+                lock_guard<mutex> lock(menu_lock);
+
+                cout << "本地已有同名文件,"
+                     << "请更改文件名后重新下载"
+                     << endl;
+            }
+
+            return;
+        }
+    }
     else {
-        { lock_guard<mutex> lock(menu_lock);
-        cout << "本地无文件，从头开始下载" << endl;}
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+
+            cout << "本地无文件，从头开始下载"
+                 << endl;
+        }
     }
 
+    /*
+     * ============================================================
+     * 2. 创建 TCP socket
+     * ============================================================
+     */
     int file_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (file_sock < 0) 
-    {
+
+    if (file_sock < 0) {
         perror("socket");
         return;
     }
 
-    struct sockaddr_in addr{};
+    /*
+     * 设置 socket 缓冲区
+     */
+    int sndbuf = 4 * 1024 * 1024;
+    int rcvbuf = 4 * 1024 * 1024;
+
+    if (setsockopt(
+            file_sock,
+            SOL_SOCKET,
+            SO_SNDBUF,
+            &sndbuf,
+            sizeof(sndbuf)) < 0) {
+
+        perror("setsockopt SO_SNDBUF");
+    }
+
+    if (setsockopt(
+            file_sock,
+            SOL_SOCKET,
+            SO_RCVBUF,
+            &rcvbuf,
+            sizeof(rcvbuf)) < 0) {
+
+        perror("setsockopt SO_RCVBUF");
+    }
+
+    /*
+     * ============================================================
+     * 3. 连接 8889 文件服务器
+     * ============================================================
+     */
+    sockaddr_in addr{};
+
     addr.sin_family = AF_INET;
     addr.sin_port = htons(8889);
-    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
-        { lock_guard<mutex> lock(menu_lock);
-        cerr << "服务器地址错误" << endl;}
-        close(file_sock);
-        return;
-    }
-     int sndbuf = 4 * 1024 * 1024;
-     int rcvbuf = 4 * 1024 * 1024;
-if (setsockopt(file_sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
-    perror("setsockopt SO_SNDBUF");
-}
-if (setsockopt(file_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
-    perror("setsockopt SO_RCVBUF");
-}
-    if (connect(file_sock, (sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("连接文件服务器失败");
+
+    if (inet_pton(
+            AF_INET,
+            ip,
+            &addr.sin_addr) != 1) {
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+
+            cerr << "服务器地址错误" << endl;
+        }
+
         close(file_sock);
         return;
     }
 
-    SSL* ssl2 = SSL_new(ctx);
-    if (!ssl2) {
-        ERR_print_errors_fp(stderr);
+    if (connect(
+            file_sock,
+            reinterpret_cast<sockaddr*>(&addr),
+            sizeof(addr)) < 0) {
+
+        perror("连接文件服务器失败");
+
         close(file_sock);
         return;
     }
+
+    {
+        lock_guard<mutex> lock(menu_lock);
+
+        cerr << "[DOWNLOAD] TCP connected to 8889"
+             << endl;
+    }
+
+    /*
+     * ============================================================
+     * 4. TLS
+     * ============================================================
+     */
+    SSL* ssl2 = SSL_new(ctx);
+
+    if (!ssl2) {
+
+        ERR_print_errors_fp(stderr);
+
+        close(file_sock);
+        return;
+    }
+
     SSL_set_fd(ssl2, file_sock);
 
     if (SSL_connect(ssl2) != 1) {
-        { lock_guard<mutex> lock(menu_lock);
-        cerr << "TLS 文件下载握手失败" << endl;}
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+
+            cerr << "TLS 文件下载握手失败"
+                 << endl;
+        }
+
         ERR_print_errors_fp(stderr);
+
         SSL_free(ssl2);
         close(file_sock);
+
         return;
     }
 
-    const uint32_t body_len = 1 + 16 + 8;
-    uint32_t net_len = htonl(body_len);
-    if (!SSL_write1(ssl2, &net_len, sizeof(net_len))) {
-        { lock_guard<mutex> lock(menu_lock);
-        cerr << "发送下载请求长度失败" << endl;}
+    {
+        lock_guard<mutex> lock(menu_lock);
+
+        cerr << "[DOWNLOAD] TLS handshake success"
+             << endl;
+    }
+
+    /*
+     * ============================================================
+     * 5. 发送 Protobuf 下载请求
+     * ============================================================
+     *
+     * 现在不再发送：
+     *
+     *     03
+     *     file_id[16]
+     *     offset[8]
+     *
+     * 而是：
+     *
+     *     ChatPacket {
+     *         type    = FILE
+     *         file_id = xxx
+     *         offset  = 本地文件大小
+     *         payload = 空
+     *     }
+     *
+     * payload 为空表示这是一个下载请求。
+     *
+     * 后续服务器发送 FILE 时：
+     *
+     *     payload != 空
+     *
+     * 表示真正的文件数据。
+     * ============================================================
+     */
+
+    chat::ChatPacket request_packet;
+
+    request_packet.set_type(
+        chat::ChatPacket::FILE
+    );
+
+    request_packet.set_file_id(
+        file_id
+    );
+
+    request_packet.set_offset(
+        static_cast<uint64_t>(local_size)
+    );
+
+    request_packet.clear_payload();
+
+    string request_body;
+
+    if (!request_packet.SerializeToString(
+            &request_body)) {
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+
+            cerr << "[DOWNLOAD] Protobuf 下载请求序列化失败"
+                 << endl;
+        }
+
         SSL_shutdown(ssl2);
         SSL_free(ssl2);
         close(file_sock);
+
         return;
     }
 
-    vector<char> packet(body_len);
-    packet[0] = 0x03;
-    char file_id_buf[16];
-    memset(file_id_buf, ' ', sizeof(file_id_buf));
-    memcpy(file_id_buf, file_id.data(), min(file_id.size(), sizeof(file_id_buf)));
-    memcpy(packet.data() + 1, file_id_buf, sizeof(file_id_buf));
+    if (request_body.size() > UINT32_MAX) {
 
-    uint64_t net_offset = htobe64(local_size);
-    memcpy(packet.data() + 1 + 16, &net_offset, sizeof(net_offset));
+        {
+            lock_guard<mutex> lock(menu_lock);
 
-    if (!SSL_write1(ssl2, packet.data(), static_cast<int>(packet.size()))) {
-        { lock_guard<mutex> lock(menu_lock);
-        cerr << "发送下载请求失败" << endl;}
+            cerr << "[DOWNLOAD] Protobuf 请求过大"
+                 << endl;
+        }
+
         SSL_shutdown(ssl2);
         SSL_free(ssl2);
         close(file_sock);
+
         return;
     }
 
-    int fd = open(filepath.c_str(), O_APPEND | O_CREAT | O_WRONLY, 0644);
+    /*
+     * ============================================================
+     * 6. 发送 Protobuf frame
+     *
+     *     [4字节网络序长度]
+     *     [protobuf body]
+     *
+     * 注意：
+     *
+     * 这里不能调用 SSL_write1()
+     *
+     * 因为 SSL_write1() 会再次包装 ChatPacket。
+     * ============================================================
+     */
+
+    uint32_t request_len =
+        htonl(
+            static_cast<uint32_t>(
+                request_body.size()
+            )
+        );
+
+    /*
+     * 发送长度
+     */
+    size_t header_sent = 0;
+
+    while (header_sent < sizeof(request_len)) {
+
+        int n = SSL_write(
+            ssl2,
+            reinterpret_cast<const char*>(&request_len)
+                + header_sent,
+            static_cast<int>(
+                sizeof(request_len) - header_sent
+            )
+        );
+
+        if (n > 0) {
+
+            header_sent += static_cast<size_t>(n);
+            continue;
+        }
+
+        int err = SSL_get_error(ssl2, n);
+
+        if (err == SSL_ERROR_WANT_READ ||
+            err == SSL_ERROR_WANT_WRITE) {
+
+            this_thread::yield();
+            continue;
+        }
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+
+            cerr << "[DOWNLOAD] 发送 Protobuf 请求长度失败"
+                 << endl;
+        }
+
+        ERR_print_errors_fp(stderr);
+
+        success = false;
+        break;
+    }
+
+    if (!success) {
+
+        SSL_shutdown(ssl2);
+        SSL_free(ssl2);
+        close(file_sock);
+
+        return;
+    }
+
+    /*
+     * 发送 protobuf body
+     */
+    size_t request_sent = 0;
+
+    while (request_sent < request_body.size()) {
+
+        int n = SSL_write(
+            ssl2,
+            request_body.data() + request_sent,
+            static_cast<int>(
+                request_body.size() - request_sent
+            )
+        );
+
+        if (n > 0) {
+
+            request_sent += static_cast<size_t>(n);
+            continue;
+        }
+
+        int err = SSL_get_error(ssl2, n);
+
+        if (err == SSL_ERROR_WANT_READ ||
+            err == SSL_ERROR_WANT_WRITE) {
+
+            this_thread::yield();
+            continue;
+        }
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+
+            cerr << "[DOWNLOAD] 发送 Protobuf 下载请求失败"
+                 << endl;
+        }
+
+        ERR_print_errors_fp(stderr);
+
+        success = false;
+        break;
+    }
+
+    if (!success) {
+
+        SSL_shutdown(ssl2);
+        SSL_free(ssl2);
+        close(file_sock);
+
+        return;
+    }
+
+    {
+        lock_guard<mutex> lock(menu_lock);
+
+        cerr << "[DOWNLOAD] Protobuf 下载请求发送成功，"
+             << "file_id=" << file_id
+             << ", offset=" << local_size
+             << endl;
+    }
+
+    /*
+     * ============================================================
+     * 7. 打开目标文件
+     * ============================================================
+     *
+     * O_APPEND 与服务器返回的 offset 配合。
+     */
+    int fd = open(
+        filepath.c_str(),
+        O_APPEND | O_CREAT | O_WRONLY,
+        0644
+    );
+
     if (fd < 0) {
+
         perror("open");
+
         SSL_shutdown(ssl2);
         SSL_free(ssl2);
         close(file_sock);
+
         return;
     }
 
-    while (true) {
-        uint32_t net_total_len = 0;
-        if (!SSL_read_all(ssl2, &net_total_len, sizeof(net_total_len))) {
-            { lock_guard<mutex> lock(menu_lock);
-            cerr << "DOWNLOAD: SSL_read_all for length returned false, maybe EOF or error" << endl;
-            }break;
+    /*
+     * ============================================================
+     * 8. 接收服务器 Protobuf 文件数据
+     * ============================================================
+     *
+     * 使用：
+     *
+     *     4字节长度
+     *     +
+     *     protobuf
+     *
+     * 一个 SSL_read 可能：
+     *
+     *     收到半个包
+     *
+     * 也可能：
+     *
+     *     收到多个包
+     *
+     * 所以自己维护 recv_buffer。
+     * ============================================================
+     */
+
+    string recv_buffer;
+
+    bool download_complete = false;
+
+    while (!download_complete) {
+
+        char buffer[256 * 1024];
+
+        int n = SSL_read(
+            ssl2,
+            buffer,
+            sizeof(buffer)
+        );
+
+        if (n > 0) {
+
+            recv_buffer.append(
+                buffer,
+                static_cast<size_t>(n)
+            );
+
+            /*
+             * 一次 SSL_read 可能包含多个 protobuf。
+             */
+            while (true) {
+
+                /*
+                 * 至少要有 4 字节长度。
+                 */
+                if (recv_buffer.size() < 4) {
+                    break;
+                }
+
+                uint32_t net_body_len = 0;
+
+                memcpy(
+                    &net_body_len,
+                    recv_buffer.data(),
+                    sizeof(net_body_len)
+                );
+
+                uint32_t body_len =
+                    ntohl(net_body_len);
+
+                /*
+                 * 防止异常包。
+                 */
+                if (body_len > 16 * 1024 * 1024) {
+
+                    {
+                        lock_guard<mutex> lock(menu_lock);
+
+                        cerr << "[DOWNLOAD] 收到非法 protobuf 包长度: "
+                             << body_len
+                             << endl;
+                    }
+
+                    success = false;
+                    download_complete = true;
+
+                    break;
+                }
+
+                /*
+                 * 当前包还没有接收完整。
+                 */
+                if (recv_buffer.size() <
+                    4 + static_cast<size_t>(body_len)) {
+
+                    break;
+                }
+
+                /*
+                 * 提取 protobuf body。
+                 */
+                string body =
+                    recv_buffer.substr(
+                        4,
+                        body_len
+                    );
+
+                /*
+                 * 从缓存删除已经处理的数据。
+                 */
+                recv_buffer.erase(
+                    0,
+                    4 + static_cast<size_t>(body_len)
+                );
+
+                /*
+                 * =================================================
+                 * 解析 ChatPacket
+                 * =================================================
+                 */
+                chat::ChatPacket packet;
+
+                if (!packet.ParseFromString(body)) {
+
+                    {
+                        lock_guard<mutex> lock(menu_lock);
+
+                        cerr << "[DOWNLOAD] "
+                             << "Protobuf 文件包解析失败"
+                             << endl;
+                    }
+
+                    success = false;
+                    download_complete = true;
+
+                    break;
+                }
+
+                /*
+                 * =================================================
+                 * 检查 packet 类型
+                 * =================================================
+                 */
+                if (packet.type() !=
+                    chat::ChatPacket::FILE) {
+
+                    {
+                        lock_guard<mutex> lock(menu_lock);
+
+                        cerr << "[DOWNLOAD] 收到未知 packet type: "
+                             << packet.type()
+                             << endl;
+                    }
+
+                    continue;
+                }
+
+                /*
+                 * 如果服务器返回的 file_id 不为空，
+                 * 校验 file_id。
+                 */
+                if (!packet.file_id().empty() &&
+                    packet.file_id() != file_id) {
+
+                    {
+                        lock_guard<mutex> lock(menu_lock);
+
+                        cerr << "[DOWNLOAD] file_id 不匹配: "
+                             << packet.file_id()
+                             << " != "
+                             << file_id
+                             << endl;
+                    }
+
+                    success = false;
+                    download_complete = true;
+
+                    break;
+                }
+
+                uint64_t packet_offset =
+                    packet.offset();
+
+                const string& data =
+                    packet.payload();
+
+                /*
+                 * =================================================
+                 * 判断结束包
+                 * =================================================
+                 *
+                 * 这里约定：
+                 *
+                 *     FILE
+                 *     payload为空
+                 *     offset = 最终文件大小
+                 *
+                 * 表示服务器已经发送完文件。
+                 * =================================================
+                 */
+                if (data.empty()) {
+
+                    if (packet_offset >= local_size) {
+
+                        local_size =
+                            static_cast<size_t>(
+                                packet_offset
+                            );
+
+                        download_complete = true;
+
+                        {
+                            lock_guard<mutex> lock(menu_lock);
+
+                            cerr << "[DOWNLOAD] "
+                                 << "服务器通知文件发送完成，"
+                                 << "size="
+                                 << local_size
+                                 << endl;
+                        }
+
+                        break;
+                    }
+
+                    /*
+                     * 空数据但是 offset 不合理。
+                     */
+                    {
+                        lock_guard<mutex> lock(menu_lock);
+
+                        cerr << "[DOWNLOAD] "
+                             << "收到非法空文件包，offset="
+                             << packet_offset
+                             << ", local="
+                             << local_size
+                             << endl;
+                    }
+
+                    success = false;
+                    download_complete = true;
+
+                    break;
+                }
+
+                /*
+                 * =================================================
+                 * 检查 offset
+                 * =================================================
+                 */
+                if (packet_offset != local_size) {
+
+                    {
+                        lock_guard<mutex> lock(menu_lock);
+
+                        cerr << "[DOWNLOAD] 下载偏移不匹配: "
+                             << "server="
+                             << packet_offset
+                             << ", local="
+                             << local_size
+                             << endl;
+                    }
+
+                    success = false;
+                    download_complete = true;
+
+                    break;
+                }
+
+                /*
+                 * =================================================
+                 * 写文件
+                 * =================================================
+                 */
+                size_t written_total = 0;
+
+                while (written_total < data.size()) {
+
+                    ssize_t w = write(
+                        fd,
+                        data.data() + written_total,
+                        data.size() - written_total
+                    );
+
+                    if (w > 0) {
+
+                        written_total +=
+                            static_cast<size_t>(w);
+
+                        continue;
+                    }
+
+                    if (w < 0 && errno == EINTR) {
+                        continue;
+                    }
+
+                    perror("write");
+
+                    success = false;
+                    download_complete = true;
+
+                    break;
+                }
+
+                if (!success) {
+                    break;
+                }
+
+                /*
+                 * 更新本地 offset。
+                 */
+                local_size += data.size();
+
+                {
+                    lock_guard<mutex> lock(menu_lock);
+
+                    cerr << "[DOWNLOAD] received "
+                         << data.size()
+                         << " bytes, total="
+                         << local_size
+                         << endl;
+                }
+            }
+
+            continue;
         }
 
-        uint32_t total_len = ntohl(net_total_len);
-        if (total_len < 1 + 16 + 8 || total_len > 4*1024 * 1024 + 1 + 16 + 8) {
-        { lock_guard<mutex> lock(menu_lock);
-            cerr << "收到非法文件包长度: " << total_len << endl;
-           }   success = false;
-            break;
+        /*
+         * ========================================================
+         * SSL_read 返回 <= 0
+         * ========================================================
+         */
+        int err = SSL_get_error(ssl2, n);
+
+        if (err == SSL_ERROR_WANT_READ ||
+            err == SSL_ERROR_WANT_WRITE) {
+
+            this_thread::yield();
+            continue;
         }
 
-        vector<char> body(total_len);
-        if (!SSL_read_all(ssl2, body.data(), body.size())) {
-            success = false;
-            break;
-        }
+        if (err == SSL_ERROR_ZERO_RETURN) {
 
-        uint8_t cmd = static_cast<uint8_t>(body[0]);
-        if (cmd != 0x83) {
-            cerr << "收到未知文件下载命令: " << static_cast<int>(cmd) << endl;
-            success = false;
-            break;
-        }
-
-        uint64_t packet_offset_net = 0;
-        memcpy(&packet_offset_net, body.data() + 1 + 16, sizeof(packet_offset_net));
-        uint64_t packet_offset = be64toh(packet_offset_net);
-
-        if (packet_offset != local_size) {
-            cerr << "下载偏移不匹配: server=" << packet_offset
-                 << ", local=" << local_size << endl;
-            success = false;
-            break;
-        }
-
-        const char* data = body.data() + 1 + 16 + 8;
-        size_t data_len = total_len - 1 - 16 - 8;
-        size_t written_total = 0;
-        while (written_total < data_len) {
-            ssize_t w = write(fd, data + written_total, data_len - written_total);
-            if (w > 0) {
-                written_total += static_cast<size_t>(w);
-            } else if (w < 0 && errno == EINTR) {
-                continue;
-            } else {
-                perror("write");
-                success = false;
+            /*
+             * TLS 正常关闭。
+             */
+            if (success && download_complete) {
                 break;
             }
-        }
-        if (!success) break;
 
-        local_size += data_len;
+            {
+                lock_guard<mutex> lock(menu_lock);
+
+                cerr << "[DOWNLOAD] "
+                     << "服务器关闭 TLS 连接"
+                     << endl;
+            }
+
+            break;
+        }
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+
+            cerr << "[DOWNLOAD] SSL_read 失败，error="
+                 << err
+                 << endl;
+        }
+
+        ERR_print_errors_fp(stderr);
+
+        success = false;
+        break;
     }
 
+    /*
+     * ============================================================
+     * 9. 清理
+     * ============================================================
+     */
     close(fd);
+
     SSL_shutdown(ssl2);
     SSL_free(ssl2);
     close(file_sock);
 
-    if (success) {
-     cerr << "文件下载完成，大小=" << local_size << " 字节" << endl;
-cerr.flush();
+    /*
+     * ============================================================
+     * 10. 最终结果
+     * ============================================================
+     */
+    if (success && download_complete) {
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+
+            cerr << "文件下载完成，大小="
+                 << local_size
+                 << " 字节"
+                 << endl;
+
+            cerr.flush();
+        }
+
     } else {
-        cerr << "文件下载中断" << endl;
+
+        {
+            lock_guard<mutex> lock(menu_lock);
+
+            cerr << "文件下载中断，当前大小="
+                 << local_size
+                 << " 字节"
+                 << endl;
+
+            cerr.flush();
+        }
     }
 }
-
 void recv_thread_func() {
     char buffer[4096];
     std::string leftover;
@@ -719,43 +1747,39 @@ void recv_thread_func() {
         );
 
         if (n > 0) {
-            buffer[n] = '\0';
             leftover.append(buffer, n);
-
-            size_t pos;
-
-            while ((pos = leftover.find('\n')) != std::string::npos) {
-
-                std::string line =
-                    leftover.substr(0, pos);
-
-                leftover.erase(0, pos + 1);
-              
-                if (!line.empty() && line.back() == '\r') {
-                    line.pop_back();
-                }
+            std::vector<chat::ChatPacket> packets;
+            if (!chat::ExtractPackets(leftover, packets)) {
+                cerr << "[PROTO] invalid server frame" << endl;
+                serverdisconnect = true;
+                break;
+            }
+            for (const auto& packet : packets) {
+                if (packet.type() != chat::ChatPacket::TEXT && packet.type() != chat::ChatPacket::HEARTBEAT) continue;
+                std::string line = packet.text();
+                if (line.empty() && !packet.payload().empty()) line = packet.payload();
+                if (!line.empty() && line.back() == '\r') line.pop_back();
 
                 if (line.rfind("LOGIN_OK", 0) == 0) {
-
-                    std::string user = line.substr(9);
-
-                    if (!user.empty() && user.back() == '\r') {
-                        user.pop_back();
-                    }
-
-                    {
-                        lock_guard<mutex> lock(state_mtu);
-                        username = user;
-                        logged_in = true;
-                    }
-                     {
-        lock_guard<mutex> lock(error_mtu);
-        send_error_occurred = false;  
+    std::string user = line.substr(9);
+    if (!user.empty() && user.back() == '\r') {
+        user.pop_back();
     }
-                    std::cout << "登录成功\n";
-                    
-                 
-                }
+
+    {
+        lock_guard<mutex> lock(state_mtu);
+        username = user;
+        logged_in = true;
+    }
+    {
+        lock_guard<mutex> lock(error_mtu);
+        send_error_occurred = false;
+    }
+    std::cout << "登录成功\n";
+    
+    // 添加这行：登录成功后显示菜单
+    send_menu();  // ← 添加这行
+}
                 else if (line.find("退出登录成功")!=string::npos) {
     lock_guard<mutex> lock(state_mtu);
     logged_in = false;
@@ -863,7 +1887,7 @@ void recv_thread_func() {
         menu=true;
     }
 }
-                else if(line=="命令完成"&&logged_in==true)
+                else if(line.find("命令完成") != string::npos&&logged_in==true)
                 {
                    bool print=false;
                    {
@@ -880,21 +1904,25 @@ void recv_thread_func() {
                         send_menu();
                     }
                     }
-                else if(line=="命令完成"&&!logged_in==false)
-                {
-                    { lock_guard<mutex> lock(menu_lock);
-                    cerr<<"目录\n"<<
-    "/1;发送验证码\n"<<
-    "/2;验证码注册\n"<<
-    "/3;验证码登录\n"<<
-    "/31;密码登录\n"<<
-    "/35;普通注册\n"
-    "/4;//忘记密码\n"<<
-    "/33;//退出\n"
-    "/34;//注销\n"<<
-    "====================请输入你的命令===================\n";
-                }}
-                else if (line == "该用户已被注销" || line.rfind("注销成功",0)==0) {
+                else if(line.find("命令完成") != string::npos&&!logged_in==false)
+                {             
+    bool print=false;
+    {
+        lock_guard<mutex> lock(upload_mtu);
+        if(!is_upload)
+        {
+            {
+                lock_guard<mutex> lock(menu_lock);
+                print=menu;
+            }
+        }
+    }
+    if(print)
+    {
+        send_menu();
+    }
+}
+                else if (line.find( "该用户已被注销" )!=string::npos|| line.rfind("注销成功",0)==0) {
                     {
             lock_guard<mutex> lock(close_mtu);
            should_close=true;
@@ -1580,6 +2608,7 @@ int main(int argc, char* argv[])
         string msg = "私聊 " + target + " " + content + "\n";
         SSL_write1(ssl, msg.c_str(), msg.size());
     }
+    send_menu();
             break;
         }
     if (content.empty()) {

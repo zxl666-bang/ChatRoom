@@ -25,6 +25,7 @@
 #include <leveldb/db.h>
 #include <vector>
 #include <cstdint>
+#include "chat.pb.h"
 #include <atomic>
 #include <memory>
 
@@ -57,7 +58,7 @@ struct Client {
 extern mutex file_clients_mtu;
 extern map<string,vector<string>> offlinemsg;
 void store_history(const string&sender,const string&place,const string&content);
-extern map<string,string>chat;
+extern map<string,string>chat1;
 extern map<string,string>chat_group;
 extern std::map<int, std::shared_ptr<Client>> clients;
 extern map<string, int> name_to_fd;

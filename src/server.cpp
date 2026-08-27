@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include "chat_utils.h" 
 #include <memory>
 #include <atomic>
 #include <shared_mutex>
@@ -45,6 +46,7 @@
 #include <leveldb/db.h>
 #include "send_email.h"
 #include "server.h"
+#include "chat.pb.h"
 #include "file_transfer.h"
 using namespace std;
 
@@ -161,7 +163,7 @@ map<string, int> name_to_fd;
 redisContext* redis_conn = nullptr;
 int epoll_fd;
 MYSQL*mysql_conn=nullptr;
-map<string,string>chat;
+map<string,string>chat1;
 mutex chat_mtu;
 map<string,string>chat_group;
 mutex chat_group_mtu;
@@ -267,7 +269,7 @@ void close_connection(int fd) {
     }
    {
     lock_guard<mutex> lock(chat_mtu);
-    chat.erase(username);
+    chat1.erase(username);
 }
 {
     lock_guard<mutex> lock(chat_group_mtu);
@@ -292,7 +294,9 @@ void flush_send_buffer(int fd) {
     lock_guard<recursive_mutex> send_lock(*c->send_mutex);
     if (c->closing.load() || !c->ssl || !c->handshak_down) return;
 
-    size_t budget = MAX_WRITE_PER_EVENT;
+    // EPOLLET: do not stop because of an artificial per-event budget.
+    // If data remains queued, no new writable edge is guaranteed.
+    size_t budget = SIZE_MAX;
     while (budget > 0 && c->send_offset < c->send_buffer.size()) {
         const char* data = c->send_buffer.data() + c->send_offset;
         size_t remain = min(c->send_buffer.size() - c->send_offset, budget);
@@ -304,7 +308,7 @@ void flush_send_buffer(int fd) {
         }
         if (n == -2 || n == -3) {
             epoll_event ev{};
-            ev.events = EPOLLIN | EPOLLOUT;
+            ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
             ev.data.fd = fd;
             epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
             return;
@@ -320,7 +324,7 @@ void flush_send_buffer(int fd) {
 
     epoll_event ev{};
     ev.data.fd = fd;
-    ev.events = EPOLLIN;
+    ev.events = EPOLLIN | EPOLLET;
     if (c->send_offset < c->send_buffer.size()) ev.events |= EPOLLOUT;
     epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 }
@@ -329,21 +333,33 @@ void flush_send_buffer(int fd) {
 void send_message(int fd, const string& msg) {
     shared_ptr<Client> c = CLIENT(fd);
     if (!c || msg.empty()) return;
+
+    chat::ChatPacket packet;
+    packet.set_type(chat::ChatPacket::TEXT);
+    packet.set_text(msg);
+    string encoded;
+    if (!packet.SerializeToString(&encoded) || encoded.size() > UINT32_MAX) {
+        cerr << "[PROTO] serialize response failed" << endl;
+        return;
+    }
+    uint32_t net_len = htonl(static_cast<uint32_t>(encoded.size()));
+    string frame(reinterpret_cast<const char*>(&net_len), sizeof(net_len));
+    frame += encoded;
+
     {
         lock_guard<recursive_mutex> lk(*c->send_mutex);
         if (c->closing.load()) return;
-        if (c->send_buffer.size() + msg.size() > MAX_SEND_BUFFER) {
+        if (c->send_buffer.size() + frame.size() > MAX_SEND_BUFFER) {
             cerr << "[SEND] slow client fd=" << fd << " exceeded "
                  << MAX_SEND_BUFFER << " bytes, closing" << endl;
-            // close_connection is recursive-safe for this client.
             close_connection(fd);
             return;
         }
-        c->send_buffer.append(msg);
+        c->send_buffer.append(frame);
     }
 
     epoll_event ev{};
-    ev.events = EPOLLIN | EPOLLOUT;
+    ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
     ev.data.fd = fd;
     epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 }
@@ -1786,14 +1802,14 @@ string block="blocklist:"+target_name;
         bool on_chat=false;
         {
             lock_guard<mutex> lock(chat_mtu);
-            auto sender=chat.find(c.username);
-            auto target=chat.find(target_name);
+            auto sender=chat1.find(c.username);
+            auto target=chat1.find(target_name);
             auto target1=chat_group.find(target_name);
-            if(sender!=chat.end()&&target!=chat.end()&&sender->second==target_name&&target->second==c.username)
+            if(sender!=chat1.end()&&target!=chat1.end()&&sender->second==target_name&&target->second==c.username)
             {
                 is_chat=true;
             }
-            if(target!=chat.end()||target1!=chat_group.end())
+            if(target!=chat1.end()||target1!=chat_group.end())
             {
                 on_chat=true;
             }
@@ -2651,12 +2667,12 @@ void qunliao(int sender_fd, const string& qun, const string& content)
         lock_guard<mutex> lock(chat_group_mtu);
         auto it=chat_group.find(member);
         auto target=chat_group.find(member);
-        auto target1=chat.find(member);
+        auto target1=chat1.find(member);
         if(it!=chat_group.end()&&it->second==qun)
         {
             is_chat=true;
         }
-        if(target1!=chat.end()||target!=chat_group.end())
+        if(target1!=chat1.end()||target!=chat_group.end())
         {
             on_chat=true;
         }
@@ -3461,7 +3477,7 @@ void handle_command(int fd, const string& line)
             if(content=="begin")
             {
                 lock_guard<mutex> lock(chat_mtu);
-            chat[CLIENT(fd)->username]=target;}
+            chat1[CLIENT(fd)->username]=target;}
             else
            {
              siliao(fd, target, content);
@@ -3471,7 +3487,7 @@ void handle_command(int fd, const string& line)
         {
             {
                 lock_guard<mutex> lock(chat_mtu);
-                chat.erase( CLIENT(fd)->username);
+                chat1.erase( CLIENT(fd)->username);
                 notify(fd);
             }
         }
@@ -3898,7 +3914,7 @@ void handle_command(int fd, const string& line)
         cerr << "TLS handshake success for fd " << fd << endl;
 
         struct epoll_event ev{};
-        ev.events = EPOLLIN;
+        ev.events = EPOLLIN | EPOLLET;
         ev.data.fd = fd;
         if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
             perror("epoll_ctl MOD after handshake");
@@ -3913,13 +3929,13 @@ void handle_command(int fd, const string& line)
     ev.data.fd = fd;
 
     if (err == SSL_ERROR_WANT_READ) {
-        ev.events = EPOLLIN;
+        ev.events = EPOLLIN | EPOLLET;
         epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
         return false;
     }
 
     if (err == SSL_ERROR_WANT_WRITE) {
-        ev.events = EPOLLOUT;
+        ev.events = EPOLLOUT | EPOLLET;
         epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
         return false;
     }
@@ -4075,10 +4091,10 @@ int main()
     set_nonblocking(listen_fd);
     set_nonblocking(file_listen_fd);
     struct epoll_event ev{};
-    ev.events = EPOLLIN;
+    ev.events = EPOLLIN | EPOLLET;
     ev.data.fd =listen_fd;
     struct epoll_event file_ev{};
-    file_ev.events = EPOLLIN;
+    file_ev.events = EPOLLIN | EPOLLET;
     file_ev.data.fd = file_listen_fd;
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &ev);
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, file_listen_fd, &file_ev);
@@ -4155,7 +4171,7 @@ if (setsockopt(client_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
                     }
 
                     struct epoll_event cev{};
-                    cev.events = EPOLLIN;
+                    cev.events = EPOLLIN | EPOLLET;
                     cev.data.fd = client_fd;
                     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &cev) < 0) {
                         perror("epoll_ctl ADD client");
@@ -4239,95 +4255,65 @@ if (is_file) {
 
 if (revents & EPOLLIN) {
 
-    char buf[4096];
+    // EPOLLET: drain TLS until WANT_READ/WANT_WRITE.
+    while (true) {
+        if (!CLIENT(fd))
+            break;
 
-    ssize_t n =tls_read(fd, buf, sizeof(buf));
+        char buf[16 * 1024];
+        ssize_t n = tls_read(fd, buf, sizeof(buf));
 
-    if (n > 0) {
-
-        cit = CLIENT(fd);
-
-        if (!cit)
-            continue;
-
-        cit->recv_buffer.append(
-            buf,
-            static_cast<size_t>(n)
-        );
-
-        size_t pos;
-
-        while ((pos =
-                cit->recv_buffer.find('\n'))
-               != string::npos) {
-
-            string line =
-                cit->recv_buffer.substr(
-                    0,
-                    pos
-                );
-
-            cit->recv_buffer.erase(
-                0,
-                pos + 1
-            );
-
-            if (!line.empty() &&
-                line.back() == '\r') {
-
-                line.pop_back();
-            }
-
-            if (!line.empty()) {
-
-                dispatch_command(fd, line);
-            }
-
-            if (!CLIENT(fd)) {
-
-                break;
-            }
-
+        if (n > 0) {
             cit = CLIENT(fd);
+            if (!cit) break;
 
-            if (!cit)
+            cit->recv_buffer.append(buf, static_cast<size_t>(n));
+
+            vector<chat::ChatPacket> packets;
+            if (!chat::ExtractPackets(cit->recv_buffer, packets)) {
+                cerr << "[PROTO] invalid client frame on fd=" << fd << endl;
+                close_connection(fd);
                 break;
+            }
+
+            for (const auto& packet : packets) {
+                if (packet.type() != chat::ChatPacket::TEXT &&
+                    packet.type() != chat::ChatPacket::HEARTBEAT) {
+                    continue;
+                }
+
+                string line = packet.text();
+                if (!line.empty() && line.back() == '\r')
+                    line.pop_back();
+                if (!line.empty())
+                    dispatch_command(fd, line);
+
+                if (!CLIENT(fd))
+                    break;
+            }
+
+            // More TLS records may already be readable. Keep draining.
+            continue;
         }
 
-    } else if (n == -2) {
+        if (n == -2) {
+            epoll_event ev{};
+            ev.events = EPOLLIN | EPOLLET;
+            ev.data.fd = fd;
+            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+            break;
+        }
 
-        struct epoll_event ev{};
-
-        ev.events = EPOLLIN;
-        ev.data.fd = fd;
-
-        epoll_ctl(
-            epoll_fd,
-            EPOLL_CTL_MOD,
-            fd,
-            &ev
-        );
-
-    } else if (n == -3) {
-
-        struct epoll_event ev{};
-
-        ev.events =
-            EPOLLIN | EPOLLOUT;
-
-        ev.data.fd = fd;
-
-        epoll_ctl(
-            epoll_fd,
-            EPOLL_CTL_MOD,
-            fd,
-            &ev
-        );
-
-    } else if (n == 0 || n == -1) {
+        if (n == -3) {
+            epoll_event ev{};
+            ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+            ev.data.fd = fd;
+            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+            break;
+        }
 
         close_connection(fd);
-        continue;
+        break;
     }
 }
 
