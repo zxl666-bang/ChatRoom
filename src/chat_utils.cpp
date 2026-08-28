@@ -8,7 +8,6 @@
 namespace chat {
 
 bool ReadPacket(SSL* ssl, ChatPacket& packet) {
-    // 读取长度头 (4字节)
     uint32_t net_len;
     int bytes_read = 0;
     while (bytes_read < 4) {
@@ -16,20 +15,19 @@ bool ReadPacket(SSL* ssl, ChatPacket& packet) {
         if (n <= 0) {
             int err = SSL_get_error(ssl, n);
             if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-                return false;  // 需要等待更多数据
+                return false;  
             }
-            return false;  // 错误
+            return false;  
         }
         bytes_read += n;
     }
     
     uint32_t len = ntohl(net_len);
-    if (len > 100 * 1024 * 1024) {  // 最大100MB
+    if (len > 100 * 1024 * 1024) {  
         std::cerr << "Packet too large: " << len << std::endl;
         return false;
     }
     
-    // 读取数据体
     std::string data;
     data.resize(len);
     bytes_read = 0;
@@ -45,7 +43,6 @@ bool ReadPacket(SSL* ssl, ChatPacket& packet) {
         bytes_read += n;
     }
     
-    // 解析 protobuf
     return packet.ParseFromString(data);
 }
 
@@ -61,7 +58,7 @@ bool ExtractPackets(std::string& buffer, std::vector<ChatPacket>& packets, size_
         }
         
         if (buffer.size() < 4 + len) {
-            break;  // 数据不完整
+            break; 
         }
         
         ChatPacket packet;
@@ -85,12 +82,10 @@ bool SendPacket(int fd, const ChatPacket& packet) {
     
     uint32_t net_len = htonl(static_cast<uint32_t>(data.size()));
     
-    // 发送长度头
     if (write(fd, &net_len, 4) != 4) {
         return false;
     }
     
-    // 发送数据
     size_t sent = 0;
     while (sent < data.size()) {
         ssize_t n = write(fd, data.data() + sent, data.size() - sent);
@@ -103,4 +98,4 @@ bool SendPacket(int fd, const ChatPacket& packet) {
     return true;
 }
 
-} // namespace chat
+} 

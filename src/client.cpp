@@ -169,14 +169,11 @@ bool SSL_write1(SSL* s, const void* buf, int num) {
         return false;
     }
     
-    // 发送长度头
     uint32_t net_len = htonl(static_cast<uint32_t>(body.size()));
     if (SSL_write(s, &net_len, sizeof(net_len)) != sizeof(net_len)) {
         serverdisconnect = true;
         return false;
     }
-    
-    // 发送数据体
     size_t sent = 0;
     while (sent < body.size()) {
         int n = SSL_write(s, body.data() + sent, static_cast<int>(body.size() - sent));
@@ -329,7 +326,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
         return;
     }
 
-    // 定位到断点续传位置
     file.seekg(static_cast<streamoff>(offset));
 
     if (!file) {
@@ -345,10 +341,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
         close(file_sock);
         return;
     }
-
-    /*
-     * 每个 protobuf FILE 数据包最多携带 4MB。
-     */
     constexpr size_t CHUNK_SIZE = 4 * 1024 * 1024;
 
     vector<char> buffer(CHUNK_SIZE);
@@ -370,20 +362,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
 
         size_t read_len = static_cast<size_t>(got);
 
-        /*
-         * =====================================================
-         * 构造 Protobuf 文件数据包
-         *
-         * 不再使用：
-         *
-         *   1 byte command
-         *   16 byte file_id
-         *   8 byte offset
-         *   file data
-         *
-         * 直接使用 ChatPacket。
-         * =====================================================
-         */
         chat::ChatPacket packet;
 
         packet.set_type(chat::ChatPacket::FILE);
@@ -398,10 +376,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
             buffer.data(),
             read_len
         );
-
-        /*
-         * protobuf 序列化
-         */
         string body;
 
         if (!packet.SerializeToString(&body)) {
@@ -423,29 +397,8 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
             success = false;
             break;
         }
-
-        /*
-         * =====================================================
-         * 外层 framing：
-         *
-         *   4 byte protobuf body length
-         *   +
-         *   protobuf body
-         *
-         * 注意：
-         *
-         * 这里绝对不能调用 SSL_write1()
-         *
-         * 因为 SSL_write1() 会再次把数据包装成 TEXT。
-         * =====================================================
-         */
-
         uint32_t net_len =
             htonl(static_cast<uint32_t>(body.size()));
-
-        /*
-         * 发送 4 字节长度
-         */
         size_t header_sent = 0;
 
         while (header_sent < sizeof(net_len)) {
@@ -488,10 +441,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
         if (!success) {
             break;
         }
-
-        /*
-         * 发送 protobuf body
-         */
         size_t sent = 0;
 
         while (sent < body.size()) {
@@ -532,9 +481,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
             break;
         }
 
-        /*
-         * 当前 chunk 成功发送。
-         */
         offset += read_len;
     }
 
@@ -552,18 +498,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
         close(file_sock);
         return;
     }
-
-    /*
-     * =====================================================
-     * 文件数据全部发送完成。
-     *
-     * 发送一个 FILE 包作为结束标志：
-     *
-     * payload 为空
-     * offset = 最终文件大小
-     *
-     * =====================================================
-     */
     chat::ChatPacket finish_packet;
 
     finish_packet.set_type(chat::ChatPacket::FILE);
@@ -573,10 +507,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
     finish_packet.set_offset(
         static_cast<uint64_t>(offset)
     );
-
-    /*
-     * payload 为空，表示文件发送结束。
-     */
     finish_packet.clear_payload();
 
     string finish_body;
@@ -611,10 +541,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
 
     uint32_t finish_len =
         htonl(static_cast<uint32_t>(finish_body.size()));
-
-    /*
-     * 发送 FILE_FINISH 的 protobuf 长度
-     */
     size_t finish_header_sent = 0;
 
     while (finish_header_sent < sizeof(finish_len)) {
@@ -655,10 +581,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
         close(file_sock);
         return;
     }
-
-    /*
-     * 发送 FILE_FINISH protobuf body
-     */
     size_t finish_sent = 0;
 
     while (finish_sent < finish_body.size()) {
@@ -706,11 +628,6 @@ void start_upload(const string& file_id, const string& filepath, size_t offset)
              << endl;
     }
 
-    /*
-     * =====================================================
-     * 等待服务器返回 protobuf。
-     * =====================================================
-     */
     string recv_buffer;
     bool server_confirmed = false;
 string response;
@@ -730,18 +647,6 @@ string response;
                 recv_buf,
                 static_cast<size_t>(n)
             );
-
-            /*
-             * 一个 SSL_read 可能收到：
-             *
-             *   半个 protobuf
-             *
-             * 或：
-             *
-             *   多个 protobuf
-             *
-             * 所以这里循环拆包。
-             */
             while (recv_buffer.size() >= 4) {
 
                 uint32_t net_len = 0;
@@ -753,10 +658,6 @@ string response;
                 );
 
                 uint32_t body_len = ntohl(net_len);
-
-                /*
-                 * 防止错误长度导致异常。
-                 */
                 if (body_len > 16 * 1024 * 1024) {
 
                     {
@@ -769,28 +670,16 @@ string response;
                     server_confirmed = false;
                     break;
                 }
-
-                /*
-                 * 半包。
-                 */
                 if (recv_buffer.size() <
                     4 + static_cast<size_t>(body_len)) {
 
                     break;
                 }
-
-                /*
-                 * 提取 protobuf body。
-                 */
                 string body =
                     recv_buffer.substr(
                         4,
                         body_len
                     );
-
-                /*
-                 * 删除已经处理的数据。
-                 */
                 recv_buffer.erase(
                     0,
                     4 + static_cast<size_t>(body_len)
@@ -809,14 +698,6 @@ string response;
                     continue;
                 }
 
-                /*
-                 * 当前服务端 send_message()
-                 * 使用 TEXT 类型返回：
-                 *
-                 *     UPLOAD_COMPLETE xxx
-                 *
-                 * 所以这里继续兼容你的现有服务器。
-                 */
                 string line = response_packet.text();
 
 if (line.empty()) {
@@ -895,10 +776,7 @@ if (line == "UPLOAD_COMPLETE " + file_id) {
 
         {
             lock_guard<mutex> lock(menu_lock);
-            cerr << "[UPLOAD] 文件传送失败："
-                 << "服务器没有返回 UPLOAD_COMPLETE"
-                 << endl;
-        }
+       }
 
         {
             lock_guard<mutex> lock(upload_mtu);
@@ -914,12 +792,6 @@ void start_download(const string& file_id, const string& filepath)
 {
     bool success = true;
     size_t local_size = 0;
-
-    /*
-     * ============================================================
-     * 1. 检查本地文件
-     * ============================================================
-     */
     ifstream local_file(filepath, ios::binary | ios::ate);
 
     if (local_file.is_open()) {
@@ -929,11 +801,6 @@ void start_download(const string& file_id, const string& filepath)
         );
 
         local_file.close();
-
-        /*
-         * 你原来的逻辑：
-         * 如果文件已经存在，不允许直接覆盖。
-         */
         if (local_size > 0) {
 
             {
@@ -956,12 +823,6 @@ void start_download(const string& file_id, const string& filepath)
                  << endl;
         }
     }
-
-    /*
-     * ============================================================
-     * 2. 创建 TCP socket
-     * ============================================================
-     */
     int file_sock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (file_sock < 0) {
@@ -969,9 +830,6 @@ void start_download(const string& file_id, const string& filepath)
         return;
     }
 
-    /*
-     * 设置 socket 缓冲区
-     */
     int sndbuf = 4 * 1024 * 1024;
     int rcvbuf = 4 * 1024 * 1024;
 
@@ -995,11 +853,6 @@ void start_download(const string& file_id, const string& filepath)
         perror("setsockopt SO_RCVBUF");
     }
 
-    /*
-     * ============================================================
-     * 3. 连接 8889 文件服务器
-     * ============================================================
-     */
     sockaddr_in addr{};
 
     addr.sin_family = AF_INET;
@@ -1038,11 +891,6 @@ void start_download(const string& file_id, const string& filepath)
              << endl;
     }
 
-    /*
-     * ============================================================
-     * 4. TLS
-     * ============================================================
-     */
     SSL* ssl2 = SSL_new(ctx);
 
     if (!ssl2) {
@@ -1078,36 +926,6 @@ void start_download(const string& file_id, const string& filepath)
         cerr << "[DOWNLOAD] TLS handshake success"
              << endl;
     }
-
-    /*
-     * ============================================================
-     * 5. 发送 Protobuf 下载请求
-     * ============================================================
-     *
-     * 现在不再发送：
-     *
-     *     03
-     *     file_id[16]
-     *     offset[8]
-     *
-     * 而是：
-     *
-     *     ChatPacket {
-     *         type    = FILE
-     *         file_id = xxx
-     *         offset  = 本地文件大小
-     *         payload = 空
-     *     }
-     *
-     * payload 为空表示这是一个下载请求。
-     *
-     * 后续服务器发送 FILE 时：
-     *
-     *     payload != 空
-     *
-     * 表示真正的文件数据。
-     * ============================================================
-     */
 
     chat::ChatPacket request_packet;
 
@@ -1160,20 +978,6 @@ void start_download(const string& file_id, const string& filepath)
         return;
     }
 
-    /*
-     * ============================================================
-     * 6. 发送 Protobuf frame
-     *
-     *     [4字节网络序长度]
-     *     [protobuf body]
-     *
-     * 注意：
-     *
-     * 这里不能调用 SSL_write1()
-     *
-     * 因为 SSL_write1() 会再次包装 ChatPacket。
-     * ============================================================
-     */
 
     uint32_t request_len =
         htonl(
@@ -1182,9 +986,6 @@ void start_download(const string& file_id, const string& filepath)
             )
         );
 
-    /*
-     * 发送长度
-     */
     size_t header_sent = 0;
 
     while (header_sent < sizeof(request_len)) {
@@ -1235,9 +1036,6 @@ void start_download(const string& file_id, const string& filepath)
         return;
     }
 
-    /*
-     * 发送 protobuf body
-     */
     size_t request_sent = 0;
 
     while (request_sent < request_body.size()) {
@@ -1296,13 +1094,6 @@ void start_download(const string& file_id, const string& filepath)
              << endl;
     }
 
-    /*
-     * ============================================================
-     * 7. 打开目标文件
-     * ============================================================
-     *
-     * O_APPEND 与服务器返回的 offset 配合。
-     */
     int fd = open(
         filepath.c_str(),
         O_APPEND | O_CREAT | O_WRONLY,
@@ -1320,28 +1111,6 @@ void start_download(const string& file_id, const string& filepath)
         return;
     }
 
-    /*
-     * ============================================================
-     * 8. 接收服务器 Protobuf 文件数据
-     * ============================================================
-     *
-     * 使用：
-     *
-     *     4字节长度
-     *     +
-     *     protobuf
-     *
-     * 一个 SSL_read 可能：
-     *
-     *     收到半个包
-     *
-     * 也可能：
-     *
-     *     收到多个包
-     *
-     * 所以自己维护 recv_buffer。
-     * ============================================================
-     */
 
     string recv_buffer;
 
@@ -1364,14 +1133,9 @@ void start_download(const string& file_id, const string& filepath)
                 static_cast<size_t>(n)
             );
 
-            /*
-             * 一次 SSL_read 可能包含多个 protobuf。
-             */
+             
             while (true) {
 
-                /*
-                 * 至少要有 4 字节长度。
-                 */
                 if (recv_buffer.size() < 4) {
                     break;
                 }
@@ -1387,9 +1151,6 @@ void start_download(const string& file_id, const string& filepath)
                 uint32_t body_len =
                     ntohl(net_body_len);
 
-                /*
-                 * 防止异常包。
-                 */
                 if (body_len > 16 * 1024 * 1024) {
 
                     {
@@ -1405,38 +1166,21 @@ void start_download(const string& file_id, const string& filepath)
 
                     break;
                 }
-
-                /*
-                 * 当前包还没有接收完整。
-                 */
                 if (recv_buffer.size() <
                     4 + static_cast<size_t>(body_len)) {
 
                     break;
                 }
-
-                /*
-                 * 提取 protobuf body。
-                 */
                 string body =
                     recv_buffer.substr(
                         4,
                         body_len
                     );
 
-                /*
-                 * 从缓存删除已经处理的数据。
-                 */
                 recv_buffer.erase(
                     0,
                     4 + static_cast<size_t>(body_len)
                 );
-
-                /*
-                 * =================================================
-                 * 解析 ChatPacket
-                 * =================================================
-                 */
                 chat::ChatPacket packet;
 
                 if (!packet.ParseFromString(body)) {
@@ -1455,11 +1199,7 @@ void start_download(const string& file_id, const string& filepath)
                     break;
                 }
 
-                /*
-                 * =================================================
-                 * 检查 packet 类型
-                 * =================================================
-                 */
+                
                 if (packet.type() !=
                     chat::ChatPacket::FILE) {
 
@@ -1474,10 +1214,7 @@ void start_download(const string& file_id, const string& filepath)
                     continue;
                 }
 
-                /*
-                 * 如果服务器返回的 file_id 不为空，
-                 * 校验 file_id。
-                 */
+               
                 if (!packet.file_id().empty() &&
                     packet.file_id() != file_id) {
 
@@ -1503,20 +1240,6 @@ void start_download(const string& file_id, const string& filepath)
                 const string& data =
                     packet.payload();
 
-                /*
-                 * =================================================
-                 * 判断结束包
-                 * =================================================
-                 *
-                 * 这里约定：
-                 *
-                 *     FILE
-                 *     payload为空
-                 *     offset = 最终文件大小
-                 *
-                 * 表示服务器已经发送完文件。
-                 * =================================================
-                 */
                 if (data.empty()) {
 
                     if (packet_offset >= local_size) {
@@ -1541,9 +1264,6 @@ void start_download(const string& file_id, const string& filepath)
                         break;
                     }
 
-                    /*
-                     * 空数据但是 offset 不合理。
-                     */
                     {
                         lock_guard<mutex> lock(menu_lock);
 
@@ -1561,11 +1281,6 @@ void start_download(const string& file_id, const string& filepath)
                     break;
                 }
 
-                /*
-                 * =================================================
-                 * 检查 offset
-                 * =================================================
-                 */
                 if (packet_offset != local_size) {
 
                     {
@@ -1585,11 +1300,6 @@ void start_download(const string& file_id, const string& filepath)
                     break;
                 }
 
-                /*
-                 * =================================================
-                 * 写文件
-                 * =================================================
-                 */
                 size_t written_total = 0;
 
                 while (written_total < data.size()) {
@@ -1624,30 +1334,17 @@ void start_download(const string& file_id, const string& filepath)
                     break;
                 }
 
-                /*
-                 * 更新本地 offset。
-                 */
                 local_size += data.size();
 
                 {
                     lock_guard<mutex> lock(menu_lock);
 
-                    cerr << "[DOWNLOAD] received "
-                         << data.size()
-                         << " bytes, total="
-                         << local_size
-                         << endl;
-                }
+          }
             }
 
             continue;
         }
 
-        /*
-         * ========================================================
-         * SSL_read 返回 <= 0
-         * ========================================================
-         */
         int err = SSL_get_error(ssl2, n);
 
         if (err == SSL_ERROR_WANT_READ ||
@@ -1690,23 +1387,12 @@ void start_download(const string& file_id, const string& filepath)
         success = false;
         break;
     }
-
-    /*
-     * ============================================================
-     * 9. 清理
-     * ============================================================
-     */
     close(fd);
 
     SSL_shutdown(ssl2);
     SSL_free(ssl2);
     close(file_sock);
 
-    /*
-     * ============================================================
-     * 10. 最终结果
-     * ============================================================
-     */
     if (success && download_complete) {
 
         {
@@ -1776,9 +1462,7 @@ void recv_thread_func() {
         send_error_occurred = false;
     }
     std::cout << "登录成功\n";
-    
-    // 添加这行：登录成功后显示菜单
-    send_menu();  // ← 添加这行
+    send_menu(); 
 }
                 else if (line.find("退出登录成功")!=string::npos) {
     lock_guard<mutex> lock(state_mtu);
@@ -2623,45 +2307,36 @@ int main(int argc, char* argv[])
             continue;
         }
     blank_count = 0;  
-    if(content=="/long")
-        {
-            long_send=true;
-            long_buferr.clear();
-            cerr<<"发长文本，发送/end表示本段结束"<<endl;
-            continue;
-        }
-        if(long_send)
-        {
-             if(content=="/end")
-             {
-                long_send=false;
-                string result;
-                if(!long_buferr.empty())
-                {
-        for(size_t i=0;i<long_buferr.size();i++)
-        {
-            if(long_buferr[i]=='\n')
-            {
-                result+="\\n";
-            }
-            else
-            {
-                result+=long_buferr[i];
-            }
-        }
-                    string msg = "私聊 " + target + " " +result + "\n";
-                    SSL_write1(ssl,msg.c_str(),msg.size());
+if (content == "/long") {
+    long_send = true;
+    long_buferr.clear();
+    cerr << "发长文本，发送 /end 表示本段结束" << endl;
+    continue;
+}
+
+if (long_send) {
+    if (content == "/end") {
+        long_send = false;
+        if (!long_buferr.empty()) {
+            string result;
+            for (size_t i = 0; i < long_buferr.size(); i++) {
+                if (long_buferr[i] == '\n') {
+                    result += "\\n";
+                } else {
+                    result += long_buferr[i];
                 }
-                long_buferr.clear();
-                cerr<<"长文本发送结束\n";
-                continue;
-             }
-             else
-             {
-              long_buferr+=content+"\n";
-             }
-             continue;
+            }
+            string msg = "私聊 " + target + " " + result + "\n";
+            SSL_write1(ssl, msg.c_str(), msg.size());
+            cerr << "长文本发送结束，共 " << long_buferr.size() << " 字节，转义后 " << result.size() << " 字节" << endl;
         }
+       long_buferr.clear();
+        continue;
+    } else {
+       long_buferr += content + "\n";
+        continue;
+    }
+}
         string msg = "私聊 " + target + " " + content + "\n";
         SSL_write1(ssl, msg.c_str(), msg.size());}
         {
@@ -2833,43 +2508,37 @@ cout << "\033[1A\033[2K\r";
             continue;
         }
         blank_count = 0;  
-        if(content=="/long")
-        {
-            long_send=true;
-            continue;
-        }
-        if(long_send)
-        {
-            if(content=="/end")
-            {
-                long_send=false;
-                if(!long_buffer.empty())
-                {
-                    string result;
-                    for(char ch:long_buffer)
-                    {
-                        if(ch=='\n')
-                        {
-                            result+="\\n";
-                        }
-                        else
-                        {
-                            result+=ch;
-                        }
-                    }
-                     string msg = "群聊 " + target + " " + result + "\n";
-                    SSL_write1(ssl, msg.c_str(), msg.size());
+      if (content == "/long") {
+    long_send = true;
+    long_buffer.clear();
+    cerr << "发长文本，发送 /end 表示本段结束" << endl;
+    continue;
+}
+
+if (long_send) {
+    if (content == "/end") {
+        long_send = false;
+        if (!long_buffer.empty()) {
+            string result;
+            for (size_t i = 0; i < long_buffer.size(); i++) {
+                if (long_buffer[i] == '\n') {
+                    result += "\\n";
+                } else {
+                    result += long_buffer[i];
                 }
-                long_buffer.clear();
-                cerr<<"长文本发送结束"<<endl;
-                continue;
             }
-            else
-            {
-                long_buffer+=content+"\n";
-                continue;
-            }
+            string msg = "群聊 " + target + " " + result + "\n";
+            SSL_write1(ssl, msg.c_str(), msg.size());
+            cerr << "长文本发送结束，共 " << long_buffer.size() << " 字节，转义后 " << result.size() << " 字节" << endl;
         }
+       long_buffer.clear();
+        continue;
+    } else {
+       long_buffer += content + "\n";
+        continue;
+    }
+}
+
         else
         {
             string msg = "群聊 " + target + " " + content + "\n";

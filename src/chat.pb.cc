@@ -150,10 +150,7 @@ constexpr ChatPacket_Type ChatPacket::HEARTBEAT;
 constexpr ChatPacket_Type ChatPacket::Type_MIN;
 constexpr ChatPacket_Type ChatPacket::Type_MAX;
 constexpr int ChatPacket::Type_ARRAYSIZE;
-#endif  // (__cplusplus < 201703) && (!defined(_MSC_VER) || (_MSC_VER >= 1900 && _MSC_VER < 1912))
-
-// ===================================================================
-
+#endif  
 class ChatPacket::_Internal {
  public:
 };
@@ -162,7 +159,7 @@ ChatPacket::ChatPacket(::PROTOBUF_NAMESPACE_ID::Arena* arena,
                          bool is_message_owned)
   : ::PROTOBUF_NAMESPACE_ID::Message(arena, is_message_owned) {
   SharedCtor(arena, is_message_owned);
-  // @@protoc_insertion_point(arena_constructor:chat.ChatPacket)
+  
 }
 ChatPacket::ChatPacket(const ChatPacket& from)
   : ::PROTOBUF_NAMESPACE_ID::Message() {
@@ -184,13 +181,13 @@ ChatPacket::ChatPacket(const ChatPacket& from)
     , decltype(_impl_.status_){}
     , decltype(_impl_.file_size_){}
     , decltype(_impl_.timestamp_){}
-    , /*decltype(_impl_._cached_size_)*/{}};
+    , {}};
 
   _internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
   _impl_.text_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.text_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   if (!from._internal_text().empty()) {
     _this->_impl_.text_.Set(from._internal_text(), 
       _this->GetArenaForAllocation());
@@ -198,7 +195,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.username_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.username_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   if (!from._internal_username().empty()) {
     _this->_impl_.username_.Set(from._internal_username(), 
       _this->GetArenaForAllocation());
@@ -206,7 +203,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.receiver_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.receiver_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   if (!from._internal_receiver().empty()) {
     _this->_impl_.receiver_.Set(from._internal_receiver(), 
       _this->GetArenaForAllocation());
@@ -214,7 +211,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.group_id_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.group_id_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   if (!from._internal_group_id().empty()) {
     _this->_impl_.group_id_.Set(from._internal_group_id(), 
       _this->GetArenaForAllocation());
@@ -222,7 +219,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.file_id_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.file_id_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif
   if (!from._internal_file_id().empty()) {
     _this->_impl_.file_id_.Set(from._internal_file_id(), 
       _this->GetArenaForAllocation());
@@ -230,7 +227,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.payload_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.payload_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif
   if (!from._internal_payload().empty()) {
     _this->_impl_.payload_.Set(from._internal_payload(), 
       _this->GetArenaForAllocation());
@@ -238,7 +235,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.filename_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.filename_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   if (!from._internal_filename().empty()) {
     _this->_impl_.filename_.Set(from._internal_filename(), 
       _this->GetArenaForAllocation());
@@ -246,7 +243,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.password_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.password_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   if (!from._internal_password().empty()) {
     _this->_impl_.password_.Set(from._internal_password(), 
       _this->GetArenaForAllocation());
@@ -254,7 +251,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.message_id_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.message_id_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   if (!from._internal_message_id().empty()) {
     _this->_impl_.message_id_.Set(from._internal_message_id(), 
       _this->GetArenaForAllocation());
@@ -262,7 +259,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.status_message_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.status_message_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   if (!from._internal_status_message().empty()) {
     _this->_impl_.status_message_.Set(from._internal_status_message(), 
       _this->GetArenaForAllocation());
@@ -270,7 +267,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   _impl_.extra_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.extra_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   if (!from._internal_extra().empty()) {
     _this->_impl_.extra_.Set(from._internal_extra(), 
       _this->GetArenaForAllocation());
@@ -278,7 +275,7 @@ ChatPacket::ChatPacket(const ChatPacket& from)
   ::memcpy(&_impl_.offset_, &from._impl_.offset_,
     static_cast<size_t>(reinterpret_cast<char*>(&_impl_.timestamp_) -
     reinterpret_cast<char*>(&_impl_.offset_)) + sizeof(_impl_.timestamp_));
-  // @@protoc_insertion_point(copy_constructor:chat.ChatPacket)
+
 }
 
 inline void ChatPacket::SharedCtor(
@@ -302,20 +299,20 @@ inline void ChatPacket::SharedCtor(
     , decltype(_impl_.status_){0}
     , decltype(_impl_.file_size_){uint64_t{0u}}
     , decltype(_impl_.timestamp_){int64_t{0}}
-    , /*decltype(_impl_._cached_size_)*/{}
+    , {}
   };
   _impl_.text_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.text_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   _impl_.username_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.username_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   _impl_.receiver_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.receiver_.Set("", GetArenaForAllocation());
-  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  #endif 
   _impl_.group_id_.InitDefault();
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.group_id_.Set("", GetArenaForAllocation());

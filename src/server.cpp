@@ -293,9 +293,6 @@ void flush_send_buffer(int fd) {
     lock_guard<recursive_mutex> state_lock(*c->state_mutex);
     lock_guard<recursive_mutex> send_lock(*c->send_mutex);
     if (c->closing.load() || !c->ssl || !c->handshak_down) return;
-
-    // EPOLLET: do not stop because of an artificial per-event budget.
-    // If data remains queued, no new writable edge is guaranteed.
     size_t budget = SIZE_MAX;
     while (budget > 0 && c->send_offset < c->send_buffer.size()) {
         const char* data = c->send_buffer.data() + c->send_offset;

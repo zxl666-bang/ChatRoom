@@ -411,9 +411,6 @@ void handle_group_file_command(redisContext* redis, int fd, const string& sender
     return;
 }
 
-// ============================================================
-// 发送文件数据块（使用 Protobuf）
-// ============================================================
 void send_next_chunk(int fd) {
     auto fit = file_contexts.find(fd);
     if (fit == file_contexts.end()) {
@@ -428,7 +425,6 @@ void send_next_chunk(int fd) {
         return;
     }
 
-    // 1. 先发送 download_chunk 中尚未发送的数据
     if (!ctx.download_chunk.empty() && ctx.chunk_sent < ctx.download_chunk.size()) {
         while (ctx.chunk_sent < ctx.download_chunk.size()) {
             size_t remaining = ctx.download_chunk.size() - ctx.chunk_sent;
@@ -463,7 +459,6 @@ void send_next_chunk(int fd) {
         ctx.chunk_sent = 0;
     }
 
-    // 2. 文件读取完成，发送结束包
     if (ctx.file_read_done) {
         if (ctx.download_state == DOWNLOAD_FINISHED) {
             epoll_event ev{};
@@ -505,14 +500,12 @@ void send_next_chunk(int fd) {
         return;
     }
 
-    // 3. 检查文件描述符
     if (ctx.download_file_fd < 0) {
         cerr << "[DOWNLOAD] invalid download_file_fd, fd=" << fd << endl;
         close_connection(fd);
         return;
     }
 
-    // 4. 读取下一块文件
     constexpr size_t CHUNK_SIZE = 1024 * 1024; // 1 MB
     vector<char> file_data(CHUNK_SIZE);
     ssize_t n = read(ctx.download_file_fd, file_data.data(), file_data.size());
@@ -524,7 +517,6 @@ void send_next_chunk(int fd) {
         return;
     }
 
-    // EOF
     if (n == 0) {
         ctx.file_read_done = true;
         close(ctx.download_file_fd);
@@ -533,7 +525,6 @@ void send_next_chunk(int fd) {
         return;
     }
 
-    // 5. 构造 Protobuf ChatPacket
     chat::ChatPacket packet;
     packet.set_type(chat::ChatPacket::FILE);
     packet.set_file_id(ctx.file_id);
@@ -551,8 +542,6 @@ void send_next_chunk(int fd) {
         close_connection(fd);
         return;
     }
-
-    // 6. 构造 [4字节长度][protobuf body]
     uint32_t body_len = htonl(static_cast<uint32_t>(body.size()));
     ctx.download_chunk.clear();
     ctx.download_chunk.reserve(sizeof(body_len) + body.size());
@@ -564,13 +553,9 @@ void send_next_chunk(int fd) {
     ctx.chunk_sent = 0;
     ctx.download_offset += static_cast<uint64_t>(n);
 
-    // 7. 立即尝试发送
     send_next_chunk(fd);
 }
 
-// ============================================================
-// 处理文件上传（使用 Protobuf）
-// ============================================================
 void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet) {
     auto fit = file_contexts.find(fd);
     if (fit == file_contexts.end()) {
@@ -590,8 +575,6 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
         close_connection(fd);
         return;
     }
-
-    // 绑定 file_id
     if (ctx.file_id.empty()) {
         ctx.file_id = file_id;
     } else if (ctx.file_id != file_id) {
@@ -605,7 +588,6 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
 
     string meta_key = "file:meta:" + file_id;
 
-    // 检查文件状态
     redisReply* reply_status = (redisReply*)redis_command(redis, "HGET %s status", meta_key.c_str());
     if (!reply_status || reply_status->type != REDIS_REPLY_STRING || string(reply_status->str) != "uploading") {
         cerr << "[PROCESS] invalid file status, file_id=" << file_id << endl;
@@ -617,7 +599,6 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
     ctx.status = reply_status->str;
     freeReplyObject(reply_status);
 
-    // 获取文件总大小
     redisReply* reply_size = (redisReply*)redis_command(redis, "HGET %s filesize", meta_key.c_str());
     if (!reply_size || reply_size->type != REDIS_REPLY_STRING) {
         if (reply_size) freeReplyObject(reply_size);
@@ -635,7 +616,6 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
     }
     freeReplyObject(reply_size);
 
-    // 打开临时文件
     string tmp_path = "./files/" + file_id + ".tmp";
     if (ctx.tmp_fd == -1) {
         ctx.tmp_fd = open(tmp_path.c_str(), O_WRONLY | O_CREAT, 0644);
@@ -646,8 +626,6 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
             return;
         }
     }
-
-    // 获取当前服务器已接收大小
     off_t current_offset = lseek(ctx.tmp_fd, 0, SEEK_END);
     if (current_offset == (off_t)-1) {
         perror("lseek upload temp file");
@@ -657,7 +635,6 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
     }
     ctx.upload_offset = static_cast<uint64_t>(current_offset);
 
-    // 检查 offset 是否匹配
     if (offset != ctx.upload_offset) {
         cerr << "[PROCESS] offset mismatch, file_id=" << file_id
              << ", client_offset=" << offset
@@ -667,9 +644,7 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
         return;
     }
 
-    // 处理文件数据或结束包
     if (!data.empty()) {
-        // 文件数据
         if (offset + data.size() > ctx.filesize) {
        /*     cerr << "[PROCESS] file data exceeds filesize, file_id=" << file_id
                  << ", offset=" << offset
@@ -706,8 +681,6 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
              << ", bytes=" << data.size()
              << ", progress=" << ctx.upload_offset << "/" << ctx.filesize << endl;
     */}
-
-    // 判断文件是否完整
     if (ctx.upload_offset >= ctx.filesize) {
         if (ctx.upload_offset != ctx.filesize) {
             cerr << "[PROCESS] upload offset exceeds filesize" << endl;
@@ -715,15 +688,11 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
             close_connection(fd);
             return;
         }
-
-        // 关闭临时文件
         if (ctx.tmp_fd != -1) {
             fsync(ctx.tmp_fd);
             close(ctx.tmp_fd);
             ctx.tmp_fd = -1;
         }
-
-        // 获取文件名
         string filename = get_filename_meta(file_id, redis);
         if (filename.empty()) {
             cerr << "[PROCESS] filename metadata empty, file_id=" << file_id << endl;
@@ -731,8 +700,6 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
             close_connection(fd);
             return;
         }
-
-        // 重命名临时文件
         string final_path = "./files/" + file_id + "_" + filename;
         if (rename(tmp_path.c_str(), final_path.c_str()) != 0) {
             perror("rename upload temp file");
@@ -742,25 +709,17 @@ void process_upload(int fd, redisContext* redis, const chat::ChatPacket& packet)
         }
 
         cerr << "[PROCESS] upload complete: " << file_id << endl;
-
-        // Redis 状态改为 complete
         redisReply* complete_reply = (redisReply*)redis_command(redis, "HSET %s status complete", meta_key.c_str());
         if (complete_reply) freeReplyObject(complete_reply);
-
-        // 发送完成消息
         string complete_msg = "UPLOAD_COMPLETE " + file_id + "\n";
         send_message(fd, complete_msg);
 
-        // 通知接收者
         notify_reciver(redis, file_id);
         cout << "Upload complete, notifying receiver..." << endl;
         return;
     }
 }
 
-// ============================================================
-// 处理文件下载请求（使用 Protobuf）
-// ============================================================
 void process_download(int fd, redisContext* redis, const chat::ChatPacket& packet) {
     cerr << "[DOWNLOAD_REQUEST] START, fd=" << fd << endl;
     
@@ -778,7 +737,6 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
 
     string meta_key = "file:meta:" + file_id;
 
-    // 检查文件是否存在
     redisReply* reply1 = (redisReply*)redis_command(redis, "EXISTS %s", meta_key.c_str());
     if (!reply1 || reply1->type != REDIS_REPLY_INTEGER || reply1->integer != 1) {
         if (reply1) freeReplyObject(reply1);
@@ -790,7 +748,6 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
     freeReplyObject(reply1);
     cerr << "[DOWNLOAD_REQUEST] file exists" << endl;
 
-    // 检查文件状态
     redisReply* reply2 = (redisReply*)redis_command(redis, "HGET %s status", meta_key.c_str());
     if (!reply2 || reply2->type != REDIS_REPLY_STRING || string(reply2->str) != "complete") {
         if (reply2) freeReplyObject(reply2);
@@ -803,13 +760,6 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
     freeReplyObject(reply2);
     cerr << "[DOWNLOAD_REQUEST] file status: complete" << endl;
 
-    // ============================================================
-    // 修改：从文件连接中获取用户名
-    // 文件连接没有登录状态，但 file_id 的 metadata 中有 sender 信息
-    // 我们需要从 Redis 获取文件的发送者，然后验证权限
-    // ============================================================
-    
-    // 获取文件的发送者
     redisReply* sender_reply = (redisReply*)redis_command(redis, "HGET %s sender", meta_key.c_str());
     if (!sender_reply || sender_reply->type != REDIS_REPLY_STRING) {
         if (sender_reply) freeReplyObject(sender_reply);
@@ -821,7 +771,6 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
     string sender = sender_reply->str;
     freeReplyObject(sender_reply);
     
-    // 获取目标（接收者）
     redisReply* target_reply = (redisReply*)redis_command(redis, "HGET %s target", meta_key.c_str());
     if (!target_reply || target_reply->type != REDIS_REPLY_STRING) {
         if (target_reply) freeReplyObject(target_reply);
@@ -833,22 +782,12 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
     string target = target_reply->str;
     freeReplyObject(target_reply);
 
-    // 检查是否是群文件
     redisReply* group_reply = (redisReply*)redis_command(redis, "HGET %s is_group", meta_key.c_str());
     bool is_group = false;
     if (group_reply && group_reply->type == REDIS_REPLY_STRING && string(group_reply->str) == "1") {
         is_group = true;
     }
     if (group_reply) freeReplyObject(group_reply);
-
-    // 对于文件下载，我们需要验证下载者是否是目标接收者或群成员
-    // 但这里无法获取下载者的用户名，因为文件连接没有登录状态
-    // 解决方法：通过主连接的用户名来验证，或者允许任何人下载（已经通过 is_target 验证）
-    
-    // 注意：在 handle_command 中已经调用了 is_target 验证权限
-    // 所以这里不再重复检查
-
-    // 获取文件名和大小
     string filename = get_filename_meta(file_id, redis);
     cerr << "[DOWNLOAD_REQUEST] filename=" << filename << endl;
     
@@ -861,11 +800,9 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
         return;
     }
 
-    // 检查本地文件
     string final_path = "./files/" + file_id + "_" + filename;
     cerr << "[DOWNLOAD_REQUEST] final_path=" << final_path << endl;
 
-    // 检查文件是否存在
     if (access(final_path.c_str(), F_OK) != 0) {
         cerr << "[DOWNLOAD_REQUEST] file not found on disk: " << final_path << endl;
         send_message(fd, "文件在磁盘上不存在\n");
@@ -875,7 +812,6 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
 
     auto fit = file_contexts.find(fd);
     if (fit == file_contexts.end()) {
-        // 如果没有上下文，创建一个
         FILETRANSFER ctx{};
         ctx.state = PARSE_HEADER;
         ctx.header_bytes = 0;
@@ -893,7 +829,6 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
 
     FILETRANSFER& ctx = fit->second;
 
-    // 打开文件
     if (ctx.download_file_fd == -1) {
         ctx.download_file_fd = open(final_path.c_str(), O_RDONLY);
         if (ctx.download_file_fd < 0) {
@@ -905,8 +840,6 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
         }
         cerr << "[DOWNLOAD_REQUEST] file opened, fd=" << ctx.download_file_fd << endl;
     }
-
-    // 设置下载状态
     ctx.file_id = file_id;
     ctx.download_state = DOWNLOAD_SENDING;
     ctx.download_offset = offset;
@@ -915,7 +848,6 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
     ctx.chunk_sent = 0;
     ctx.file_read_done = false;
 
-    // 定位到请求的偏移位置
     if (lseek(ctx.download_file_fd, offset, SEEK_SET) == -1) {
         perror("lseek");
         cerr << "[DOWNLOAD_REQUEST] lseek failed: " << strerror(errno) << endl;
@@ -926,13 +858,9 @@ void process_download(int fd, redisContext* redis, const chat::ChatPacket& packe
     }
     cerr << "[DOWNLOAD_REQUEST] lseek success, offset=" << offset << endl;
 
-    // 开始发送
     cerr << "[DOWNLOAD_REQUEST] starting send_next_chunk" << endl;
     send_next_chunk(fd);
 }
-// ============================================================
-// 处理完整 Protobuf 数据包
-// ============================================================
 void process_packet(int fd, redisContext* redis, const chat::ChatPacket& packet) {
     if (packet.type() != chat::ChatPacket::FILE) {
         cerr << "[PROCESS] invalid packet type=" << packet.type() << endl;
@@ -941,34 +869,23 @@ void process_packet(int fd, redisContext* redis, const chat::ChatPacket& packet)
 
     const string& payload = packet.payload();
 
-    // 判断是上传请求、上传数据、还是下载请求
     if (payload.empty()) {
-        // payload 为空：可能是下载请求或完成通知
         uint64_t offset = packet.offset();
         if (offset == 0) {
-            // offset=0 且 payload 为空：可能是下载请求或初始包
-            // 检查是否有文件数据待处理，没有就认为是下载请求
             auto fit = file_contexts.find(fd);
             if (fit != file_contexts.end() && !fit->second.file_id.empty()) {
-                // 已经在上传过程中，可能是结束包
                 process_upload(fd, redis, packet);
             } else {
-                // 下载请求
                 process_download(fd, redis, packet);
             }
         } else {
-            // offset > 0 且 payload 为空：上传完成通知
             process_upload(fd, redis, packet);
         }
     } else {
-        // payload 非空：上传数据
         process_upload(fd, redis, packet);
     }
 }
 
-// ============================================================
-// 文件数据入口
-// ============================================================
 void on_file_data(int fd, redisContext* redis) {
     auto fit = file_contexts.find(fd);
     if (fit == file_contexts.end()) {
@@ -977,7 +894,6 @@ void on_file_data(int fd, redisContext* redis) {
         return;
     }
 
-    // 如果正在下载发送，继续发送
     if (fit->second.download_state == DOWNLOAD_SENDING) {
         send_next_chunk(fd);
         return;
@@ -1002,10 +918,7 @@ void on_file_data(int fd, redisContext* redis) {
             if (it == file_contexts.end()) {
                 return;
             }
-            // 追加到缓冲区
             it->second.buffer.insert(it->second.buffer.end(), read_buf, read_buf + n);
-
-            // 从缓冲区提取完整 protobuf 包
             while (true) {
                 vector<char> packet_data;
                 {
@@ -1045,7 +958,6 @@ void on_file_data(int fd, redisContext* redis) {
                     break;
                 }
 
-                // 解析并处理 protobuf 包
                 chat::ChatPacket packet;
                 if (!packet.ParseFromArray(packet_data.data(), static_cast<int>(packet_data.size()))) {
                     cerr << "[FILE] protobuf parse failed, fd=" << fd << endl;
